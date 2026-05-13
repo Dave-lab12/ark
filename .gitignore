@@ -1,0 +1,20 @@
+# Compiled binary
+/ark
+
+# Go test binaries and coverage reports
+*.test
+*.out
+coverage.txt
+cover.out
+
+# Vendor directory (if you ever use 'go mod vendor')
+vendor/
+
+# OS specific files
+.DS_Store
+Thumbs.db
+
+# IDE and editor files
+.idea/
+.vscode/
+*.swp

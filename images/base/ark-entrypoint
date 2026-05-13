@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+mkdir -p /run/ark /home/dev/.cache
+if [[ ! -e /home/dev/.zshrc ]]; then
+    printf '# Created by Ark. Customize freely.\n' > /home/dev/.zshrc
+fi
+chown -R dev:dev /home/dev
+
+if [[ "${ARK_DOCKER_ENABLED:-true}" == "true" ]]; then
+    mkdir -p /var/run /var/lib/docker
+    if ! pgrep -x dockerd >/dev/null 2>&1; then
+        dockerd --host=unix:///var/run/docker.sock >/tmp/dockerd.log 2>&1 &
+    fi
+    for _ in $(seq 1 30); do
+        if docker info >/dev/null 2>&1; then
+            break
+        fi
+        sleep 0.5
+    done
+fi
+
+exec sleep infinity

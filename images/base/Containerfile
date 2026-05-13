@@ -1,0 +1,56 @@
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        fd-find \
+        fzf \
+        git \
+        gnupg \
+        iproute2 \
+        iptables \
+        jq \
+        less \
+        neovim \
+        openssh-client \
+        procps \
+        ripgrep \
+        sudo \
+        tmux \
+        unzip \
+        wget \
+        xz-utils \
+        zsh \
+    && install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
+    && chmod a+r /etc/apt/keyrings/docker.asc \
+    && . /etc/os-release \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${VERSION_CODENAME} stable" > /etc/apt/sources.list.d/docker.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        containerd.io \
+        docker-buildx-plugin \
+        docker-ce \
+        docker-ce-cli \
+        docker-compose-plugin \
+    && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
+    && curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh \
+    && groupadd -f docker \
+    && useradd -m -s /bin/zsh -u 1000 dev \
+    && usermod -aG sudo,docker dev \
+    && echo "dev ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev \
+    && chmod 0440 /etc/sudoers.d/dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY ark-entrypoint /usr/local/bin/ark-entrypoint
+COPY ark-ssh /usr/local/bin/ark-ssh
+
+RUN chmod 0755 /usr/local/bin/ark-entrypoint /usr/local/bin/ark-ssh
+
+WORKDIR /work
+
+ENTRYPOINT ["/usr/local/bin/ark-entrypoint"]

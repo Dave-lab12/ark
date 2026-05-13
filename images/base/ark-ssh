@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+sock="${ARK_GIT_BROKER_SOCK:-/run/ark/git-broker.sock}"
+
+echo "ark-ssh: Ark Git broker is not implemented in this MVP." >&2
+echo "ark-ssh: expected broker socket at ${sock}" >&2
+exit 255
