@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.0.4](https://github.com/Dave-lab12/ark/compare/v0.0.3...v0.0.4) (2026-05-14)
+
+
+### Bug Fixes
+
+* embed base image assets and add self-update command ([dea81eb](https://github.com/Dave-lab12/ark/commit/dea81eb37b635b5bc7c8faba7f10a5215de6ebbb))
+
 ## [0.0.3](https://github.com/Dave-lab12/ark/compare/v0.0.2...v0.0.3) (2026-05-14)
 
 
