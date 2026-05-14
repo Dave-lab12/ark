@@ -38,4 +38,3 @@ changelog:
 release:
   draft: false
   prerelease: auto
-  mode: keep-existing
