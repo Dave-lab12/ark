@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ type App struct {
 	paths    Paths
 	config   Config
 	registry *Registry
+	images   *ImageStore
 	in       io.Reader
 	out      io.Writer
 	errOut   io.Writer
@@ -30,6 +32,7 @@ type InitOptions struct {
 	Runtime       string
 	SSHEnabled    bool
 	DockerEnabled bool
+	Enter         bool
 	AssumeYes     bool
 }
 
@@ -38,14 +41,29 @@ func NewApp(in io.Reader, out, errOut io.Writer) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := paths.EnsureControlPlane(); err != nil {
+		return nil, err
+	}
+	if err := EnsureDefaultConfig(paths); err != nil {
+		return nil, err
+	}
 	config, err := LoadConfig(paths)
 	if err != nil {
 		return nil, err
 	}
+	if err := EnsureImageSource(config); err != nil {
+		return nil, err
+	}
+	projectRoot, err := config.ProjectRootPath()
+	if err != nil {
+		return nil, err
+	}
+	paths.ProjectRoot = projectRoot
 	app := &App{
 		paths:    paths,
 		config:   config,
 		registry: NewRegistry(paths),
+		images:   NewImageStore(paths),
 		in:       in,
 		out:      out,
 		errOut:   errOut,
@@ -57,6 +75,34 @@ func NewApp(in io.Reader, out, errOut io.Writer) (*App, error) {
 		app.stdout = file
 	}
 	return app, nil
+}
+
+func (a *App) Prepare(ctx context.Context) error {
+	if err := a.paths.EnsureControlPlane(); err != nil {
+		return err
+	}
+	if err := EnsureDefaultConfig(a.paths); err != nil {
+		return err
+	}
+	if err := EnsureImageSource(a.config); err != nil {
+		return err
+	}
+	if err := a.registry.EnsureDefault(ctx); err != nil {
+		return err
+	}
+	if err := a.images.EnsureDefault(ctx); err != nil {
+		return err
+	}
+	if _, err := LoadConfig(a.paths); err != nil {
+		return err
+	}
+	if _, err := a.registry.Load(ctx); err != nil {
+		return err
+	}
+	if _, err := a.images.Load(ctx); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (a *App) InitProject(ctx context.Context, name string, opts InitOptions) error {
@@ -99,19 +145,19 @@ func (a *App) InitProject(ctx context.Context, name string, opts InitOptions) er
 		return fmt.Errorf("create project directory %s: %w", projectPath, err)
 	}
 
-	project, err := NewProject(name, selectedRuntime, projectPath, a.config.Image.Name, opts.SSHEnabled, opts.DockerEnabled)
+	imageInfo, err := a.ensureBaseImage(ctx, rt, selectedRuntime)
+	if err != nil {
+		return err
+	}
+	project, err := NewProject(name, selectedRuntime, projectPath, a.config.Image.Tag, imageInfo.Fingerprint, opts.SSHEnabled, opts.DockerEnabled)
 	if err != nil {
 		return err
 	}
 
-	if a.config.Image.SkipBuild {
-		fmt.Fprintf(a.out, "Using configured image %s without building\n", project.Image)
-	} else {
-		if err := BuildBaseImage(ctx, rt, a.config, a.out, a.errOut); err != nil {
-			return err
-		}
+	if err := a.prepareProjectMounts(project); err != nil {
+		return err
 	}
-	volumeNames := projectVolumeNames(project)
+	volumeNames := projectCreateVolumeNames(project)
 	createdVolumes := make([]string, 0, len(volumeNames))
 	for _, volumeName := range volumeNames {
 		if err := rt.CreateVolume(ctx, volumeName); err != nil {
@@ -127,10 +173,11 @@ func (a *App) InitProject(ctx context.Context, name string, opts InitOptions) er
 		ProjectName:   project.Name,
 		ProjectID:     project.ID,
 		ProjectPath:   project.Path,
-		Workdir:       "/work",
-		Env:           ProjectEnv(project),
-		Mounts:        ProjectMounts(project),
+		Workdir:       a.config.Container.Workdir,
+		Env:           ProjectEnv(project, a.config),
+		Mounts:        a.projectMounts(project),
 		DockerEnabled: project.DockerEnabled,
+		Privileged:    a.config.Container.Privileged,
 		Network:       true,
 	}); err != nil {
 		a.cleanupVolumes(ctx, rt, createdVolumes)
@@ -152,7 +199,7 @@ func (a *App) InitProject(ctx context.Context, name string, opts InitOptions) er
 	}
 
 	fmt.Fprintf(a.out, "Created project %s at %s using %s\n", project.Name, project.Path, project.Runtime)
-	if a.isInteractive() {
+	if opts.Enter && a.isInteractive() {
 		return a.RunProject(ctx, project.Name, nil)
 	}
 	fmt.Fprintf(a.out, "Enter it with: ark %s\n", project.Name)
@@ -162,6 +209,9 @@ func (a *App) InitProject(ctx context.Context, name string, opts InitOptions) er
 func (a *App) StartProject(ctx context.Context, name string, enter bool) error {
 	project, rt, err := a.projectRuntime(ctx, name)
 	if err != nil {
+		return err
+	}
+	if err := a.warnProjectImageStale(ctx, project); err != nil {
 		return err
 	}
 	if err := a.ensureStarted(ctx, rt, project); err != nil {
@@ -254,6 +304,9 @@ func (a *App) RunProject(ctx context.Context, name string, cmd []string) error {
 	if err != nil {
 		return err
 	}
+	if err := a.warnProjectImageStale(ctx, project); err != nil {
+		return err
+	}
 	if err := a.ensureStarted(ctx, rt, project); err != nil {
 		return err
 	}
@@ -312,9 +365,22 @@ func (a *App) ensureStarted(ctx context.Context, rt Runtime, project Project) er
 }
 
 func (a *App) execProject(ctx context.Context, rt Runtime, project Project, cmd []string) error {
+	extraEnv := []string{}
+	if project.SSHEnabled && a.config.Git.Enabled {
+		broker, err := a.startGitBroker(ctx, project)
+		if err != nil {
+			return err
+		}
+		extraEnv = broker.Environment()
+		defer func() {
+			if err := broker.Close(); err != nil {
+				slog.Warn("close Git broker", "project", project.Name, "error", err)
+			}
+		}()
+	}
 	tty := len(cmd) == 0 && a.isInteractive()
 	if len(cmd) == 0 {
-		cmd = []string{"/bin/zsh"}
+		cmd = []string{a.config.Container.Shell}
 	}
 	stdin := a.in
 	if !tty && a.stdin != nil && term.IsTerminal(int(a.stdin.Fd())) {
@@ -322,14 +388,22 @@ func (a *App) execProject(ctx context.Context, rt Runtime, project Project, cmd 
 	}
 	return rt.Exec(ctx, project.ContainerName, ExecSpec{
 		Cmd:     cmd,
-		Env:     ProjectEnv(project),
-		Workdir: "/work",
-		User:    "dev",
+		Env:     append(ProjectEnv(project, a.config), extraEnv...),
+		Workdir: a.config.Container.Workdir,
+		User:    a.config.Container.User,
 		TTY:     tty,
 		Stdin:   stdin,
 		Stdout:  a.out,
 		Stderr:  a.errOut,
 	})
+}
+
+func (a *App) startGitBroker(ctx context.Context, project Project) (*GitBroker, error) {
+	if err := a.prepareProjectMounts(project); err != nil {
+		return nil, err
+	}
+	socketPath := filepath.Join(a.paths.ProjectSocketDir(project), filepath.Base(a.config.Git.BrokerSocket))
+	return StartGitBroker(ctx, socketPath, a.config.Git.Hosts, a.errOut)
 }
 
 func (a *App) touchProject(ctx context.Context, name string) error {

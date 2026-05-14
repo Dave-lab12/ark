@@ -2,7 +2,33 @@
 set -euo pipefail
 
 sock="${ARK_GIT_BROKER_SOCK:-/run/ark/git-broker.sock}"
+argv_json="$(
+    printf '%s\n' "$@" \
+        | jq -R . \
+        | jq -s -c .
+)"
+env_json="$(
+    env \
+        | jq -R 'split("=") | {(.[0]): (.[1:] | join("="))}' \
+        | jq -s -c add
+)"
+request="$(
+    jq -nc \
+        --argjson argv "${argv_json}" \
+        --argjson env "${env_json}" \
+        --arg cwd "${PWD}" \
+        '{argv: $argv, env: $env, cwd: $cwd}'
+)"
 
-echo "ark-ssh: Ark Git broker is not implemented in this MVP." >&2
-echo "ark-ssh: expected broker socket at ${sock}" >&2
-exit 255
+send_request() {
+    printf 'ARKGIT1 %s\n' "$(printf '%s' "${request}" | base64 | tr -d '\n')"
+    cat
+}
+
+if ! send_request | socat - "UNIX-CONNECT:${sock}"; then
+    if [[ -n "${ARK_GIT_BROKER_TCP:-}" ]]; then
+        send_request | socat - "TCP:${ARK_GIT_BROKER_TCP}"
+    else
+        exit 255
+    fi
+fi

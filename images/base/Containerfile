@@ -20,6 +20,7 @@ RUN apt-get update \
         openssh-client \
         procps \
         ripgrep \
+        socat \
         sudo \
         tmux \
         unzip \
@@ -44,6 +45,7 @@ RUN apt-get update \
     && groupadd -f docker \
     && useradd -m -s /bin/zsh -u 1000 dev \
     && usermod -aG sudo,docker dev \
+    && passwd -d dev \
     && echo "dev ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev \
     && chmod 0440 /etc/sudoers.d/dev \
     && apt-get clean \

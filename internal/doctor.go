@@ -26,7 +26,11 @@ func (a *App) Doctor(ctx context.Context) error {
 
 	fmt.Fprintf(a.out, "state: %s\n", a.paths.StateFile)
 	fmt.Fprintf(a.out, "config: %s\n", a.paths.ConfigFile)
+	fmt.Fprintf(a.out, "image state: %s\n", a.paths.ImageStateFile)
+	fmt.Fprintf(a.out, "cache: %s\n", a.paths.CacheDir)
+	fmt.Fprintf(a.out, "sockets: %s\n", a.paths.SocketsDir)
+	fmt.Fprintf(a.out, "logs: %s\n", a.paths.LogsDir)
 	fmt.Fprintf(a.out, "projects: %s\n", a.paths.ProjectRoot)
-	fmt.Fprintf(a.out, "image: %s\n", a.config.Image.Name)
+	fmt.Fprintf(a.out, "image: %s\n", a.config.Image.Tag)
 	return nil
 }

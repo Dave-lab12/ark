@@ -6,17 +6,19 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/adrg/xdg"
 )
 
 type Paths struct {
-	DataDir     string
-	ConfigDir   string
-	ConfigFile  string
-	StateFile   string
-	LockFile    string
-	ProjectRoot string
+	ArkHome        string
+	ImageDir       string
+	ImageStateFile string
+	SocketsDir     string
+	CacheDir       string
+	LogsDir        string
+	ConfigFile     string
+	StateFile      string
+	LockFile       string
+	ProjectRoot    string
 }
 
 func DefaultPaths() (Paths, error) {
@@ -25,39 +27,25 @@ func DefaultPaths() (Paths, error) {
 		return Paths{}, fmt.Errorf("find home directory: %w", err)
 	}
 
-	dataDir := filepath.Join(dataHome(home), "ark")
-	configDir := filepath.Join(configHome(home), "ark")
-	stateFile := filepath.Join(dataDir, "state.json")
+	arkHome := filepath.Join(home, ".ark")
+	stateFile := filepath.Join(arkHome, "state.json")
 	return Paths{
-		DataDir:     dataDir,
-		ConfigDir:   configDir,
-		ConfigFile:  filepath.Join(configDir, "config.toml"),
-		StateFile:   stateFile,
-		LockFile:    stateFile + ".lock",
-		ProjectRoot: filepath.Join(home, "ark"),
+		ArkHome:        arkHome,
+		ImageDir:       filepath.Join(arkHome, "image"),
+		ImageStateFile: filepath.Join(arkHome, "image", "state.json"),
+		SocketsDir:     filepath.Join(arkHome, "sockets"),
+		CacheDir:       filepath.Join(arkHome, "cache"),
+		LogsDir:        filepath.Join(arkHome, "logs"),
+		ConfigFile:     filepath.Join(arkHome, "config.toml"),
+		StateFile:      stateFile,
+		LockFile:       stateFile + ".lock",
+		ProjectRoot:    filepath.Join(home, "ark"),
 	}, nil
 }
 
-func dataHome(home string) string {
-	if env := os.Getenv("XDG_DATA_HOME"); env != "" {
-		return env
-	}
-	if strings.Contains(xdg.DataHome, ".local/share") {
-		return xdg.DataHome
-	}
-	return filepath.Join(home, ".local", "share")
-}
-
-func configHome(home string) string {
-	if env := os.Getenv("XDG_CONFIG_HOME"); env != "" {
-		return env
-	}
-	return filepath.Join(home, ".config")
-}
-
 func (p Paths) Ensure() error {
-	if err := os.MkdirAll(p.DataDir, 0o700); err != nil {
-		return fmt.Errorf("create data directory %s: %w", p.DataDir, err)
+	if err := p.EnsureControlPlane(); err != nil {
+		return err
 	}
 	if err := os.MkdirAll(p.ProjectRoot, 0o755); err != nil {
 		return fmt.Errorf("create project root %s: %w", p.ProjectRoot, err)
@@ -65,11 +53,34 @@ func (p Paths) Ensure() error {
 	return nil
 }
 
-func (p Paths) EnsureConfigDir() error {
-	if err := os.MkdirAll(p.ConfigDir, 0o700); err != nil {
-		return fmt.Errorf("create config directory %s: %w", p.ConfigDir, err)
+func (p Paths) EnsureControlPlane() error {
+	dirs := []string{
+		p.ArkHome,
+		p.ImageDir,
+		p.SocketsDir,
+		p.CacheDir,
+		p.LogsDir,
+	}
+	for _, dir := range dirs {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return fmt.Errorf("create Ark directory %s: %w", dir, err)
+		}
 	}
 	return nil
+}
+
+func (p Paths) EnsureConfigDir() error {
+	if err := os.MkdirAll(filepath.Dir(p.ConfigFile), 0o700); err != nil {
+		return fmt.Errorf("create config directory %s: %w", filepath.Dir(p.ConfigFile), err)
+	}
+	return nil
+}
+
+func (p Paths) ProjectSocketDir(project Project) string {
+	if project.ID == "" {
+		return filepath.Join(p.SocketsDir, project.Name)
+	}
+	return filepath.Join(p.SocketsDir, project.ID)
 }
 
 func (p Paths) ProjectPath(name string) (string, error) {
@@ -115,4 +126,44 @@ func DirExistsNonEmpty(path string) (bool, error) {
 		return false, fmt.Errorf("read directory %s: %w", path, err)
 	}
 	return len(entries) > 0, nil
+}
+
+func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return fmt.Errorf("create directory %s: %w", dir, err)
+	}
+
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+"-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temporary file for %s: %w", path, err)
+	}
+	tmpName := tmp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			_ = os.Remove(tmpName)
+		}
+	}()
+
+	if err := tmp.Chmod(perm); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("chmod temporary file for %s: %w", path, err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("write temporary file for %s: %w", path, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		_ = tmp.Close()
+		return fmt.Errorf("sync temporary file for %s: %w", path, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temporary file for %s: %w", path, err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		return fmt.Errorf("replace %s: %w", path, err)
+	}
+	cleanup = false
+	return nil
 }

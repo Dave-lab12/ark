@@ -3,6 +3,7 @@ package internal
 import (
 	"crypto/rand"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -14,13 +15,14 @@ import (
 var projectNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$`)
 
 var reservedProjectNames = map[string]struct{}{
-	"code":       {},
 	"config":     {},
 	"completion": {},
 	"doctor":     {},
 	"help":       {},
+	"image":      {},
 	"init":       {},
 	"ls":         {},
+	"rebuild":    {},
 	"rm":         {},
 	"start":      {},
 	"stop":       {},
@@ -40,7 +42,7 @@ func ValidateProjectName(name string) error {
 	return nil
 }
 
-func NewProject(name, runtimeName, projectPath, image string, sshEnabled, dockerEnabled bool) (Project, error) {
+func NewProject(name, runtimeName, projectPath, image, imageFingerprint string, sshEnabled, dockerEnabled bool) (Project, error) {
 	id, err := newULID()
 	if err != nil {
 		return Project{}, err
@@ -48,12 +50,13 @@ func NewProject(name, runtimeName, projectPath, image string, sshEnabled, docker
 	now := time.Now().UTC()
 	containerName := "ark-" + id
 	return Project{
-		ID:            id,
-		Name:          name,
-		Runtime:       runtimeName,
-		Path:          projectPath,
-		ContainerName: containerName,
-		Image:         image,
+		ID:               id,
+		Name:             name,
+		Runtime:          runtimeName,
+		Path:             projectPath,
+		ContainerName:    containerName,
+		Image:            image,
+		ImageFingerprint: imageFingerprint,
 		Volumes: Volumes{
 			Home:   containerName + "-home",
 			Cache:  containerName + "-cache",
@@ -109,6 +112,26 @@ func ProjectMounts(project Project) []MountSpec {
 	return mounts
 }
 
+func appendProjectControlPlaneMounts(mounts []MountSpec, paths Paths, project Project) []MountSpec {
+	if project.SSHEnabled {
+		mounts = append(mounts, MountSpec{
+			Type:   MountTypeBind,
+			Source: paths.ProjectSocketDir(project),
+			Target: "/run/ark",
+		})
+	}
+	return mounts
+}
+
+func ensureProjectControlPlane(paths Paths, project Project) error {
+	if project.SSHEnabled {
+		if err := os.MkdirAll(paths.ProjectSocketDir(project), 0o700); err != nil {
+			return fmt.Errorf("create project socket directory: %w", err)
+		}
+	}
+	return nil
+}
+
 func projectVolumeNames(project Project) []string {
 	names := []string{
 		project.Volumes.Home,
@@ -120,14 +143,28 @@ func projectVolumeNames(project Project) []string {
 	return names
 }
 
-func ProjectEnv(project Project) []string {
+func projectCreateVolumeNames(project Project) []string {
+	return projectVolumeNames(project)
+}
+
+func ProjectEnv(project Project, config Config) []string {
 	env := []string{
 		"ARK_PROJECT_ID=" + project.ID,
 		"ARK_PROJECT_NAME=" + project.Name,
 		"ARK_RUNTIME=" + project.Runtime,
 	}
 	if project.DockerEnabled {
-		env = append(env, "DOCKER_HOST=unix:///var/run/docker.sock")
+		env = append(env,
+			"DOCKER_HOST=unix:///var/run/docker.sock",
+			"ARK_DOCKER_DATA_ROOT="+config.Docker.DataRoot,
+			fmt.Sprintf("ARK_START_DOCKERD=%t", config.Docker.StartDockerd),
+		)
+	}
+	if project.SSHEnabled && config.Git.Enabled {
+		env = append(env,
+			"GIT_SSH_COMMAND=/usr/local/bin/ark-ssh",
+			"ARK_GIT_BROKER_SOCK="+config.Git.BrokerSocket,
+		)
 	}
 	return env
 }

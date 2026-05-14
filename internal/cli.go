@@ -26,6 +26,9 @@ func Main(ctx context.Context, args []string) int {
 }
 
 func (a *App) Execute(ctx context.Context, args []string) error {
+	if err := a.Prepare(ctx); err != nil {
+		return err
+	}
 	if len(args) > 0 && !isKnownCommand(args[0]) && args[0] != "--help" && args[0] != "-h" {
 		return a.RunProject(ctx, args[0], args[1:])
 	}
@@ -57,17 +60,19 @@ func (a *App) rootCommand(ctx context.Context) *cobra.Command {
 	root.AddCommand(a.removeCommand())
 	root.AddCommand(a.listCommand())
 	root.AddCommand(a.tempCommand())
-	root.AddCommand(a.codeCommand())
 	root.AddCommand(a.configCommand())
+	root.AddCommand(a.imageCommand())
+	root.AddCommand(a.rebuildCommand())
 	root.AddCommand(a.doctorCommand())
 	return root
 }
 
 func (a *App) initCommand() *cobra.Command {
 	opts := InitOptions{
-		Runtime:       RuntimeAuto,
-		SSHEnabled:    true,
-		DockerEnabled: true,
+		Runtime:       a.config.Runtime,
+		SSHEnabled:    a.config.Init.SSH,
+		DockerEnabled: a.config.Init.Docker && a.config.Docker.Enabled,
+		Enter:         a.config.Init.Enter,
 	}
 	var noSSH bool
 	var noDocker bool
@@ -76,12 +81,12 @@ func (a *App) initCommand() *cobra.Command {
 		Short: "Create a persistent project",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			opts.SSHEnabled = !noSSH
-			opts.DockerEnabled = !noDocker
+			opts.SSHEnabled = a.config.Init.SSH && !noSSH
+			opts.DockerEnabled = a.config.Init.Docker && a.config.Docker.Enabled && !noDocker
 			return a.InitProject(cmd.Context(), args[0], opts)
 		},
 	}
-	cmd.Flags().StringVar(&opts.Runtime, "runtime", RuntimeAuto, "runtime: auto, apple, or docker")
+	cmd.Flags().StringVar(&opts.Runtime, "runtime", a.config.Runtime, "runtime: auto, apple, or docker")
 	cmd.Flags().BoolVarP(&opts.AssumeYes, "yes", "y", false, "skip confirmation prompts")
 	cmd.Flags().BoolVar(&noSSH, "no-ssh", false, "disable Git-over-SSH broker support for this project")
 	cmd.Flags().BoolVar(&noDocker, "no-docker", false, "disable Docker-in-container for this project")
@@ -143,17 +148,6 @@ func (a *App) tempCommand() *cobra.Command {
 		Args:  cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return errors.New("ark temp is not implemented in the Docker lifecycle MVP")
-		},
-	}
-}
-
-func (a *App) codeCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "code <name>",
-		Short: "Print/open VS Code Remote-SSH target",
-		Args:  cobra.ExactArgs(1),
-		RunE: func(cmd *cobra.Command, args []string) error {
-			return a.Code(cmd.Context(), args[0])
 		},
 	}
 }

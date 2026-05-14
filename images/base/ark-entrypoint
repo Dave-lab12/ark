@@ -7,10 +7,11 @@ if [[ ! -e /home/dev/.zshrc ]]; then
 fi
 chown -R dev:dev /home/dev
 
-if [[ "${ARK_DOCKER_ENABLED:-true}" == "true" ]]; then
-    mkdir -p /var/run /var/lib/docker
+if [[ "${ARK_DOCKER_ENABLED:-true}" == "true" && "${ARK_START_DOCKERD:-true}" == "true" ]]; then
+    data_root="${ARK_DOCKER_DATA_ROOT:-/var/lib/docker}"
+    mkdir -p /var/run "${data_root}"
     if ! pgrep -x dockerd >/dev/null 2>&1; then
-        dockerd --host=unix:///var/run/docker.sock >/tmp/dockerd.log 2>&1 &
+        dockerd --host=unix:///var/run/docker.sock --data-root="${data_root}" >/tmp/dockerd.log 2>&1 &
     fi
     for _ in $(seq 1 30); do
         if docker info >/dev/null 2>&1; then

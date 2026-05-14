@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/gofrs/flock"
@@ -48,6 +47,20 @@ func (r *Registry) Update(ctx context.Context, fn func(*State) error) error {
 			return err
 		}
 		return r.writeUnlocked(state)
+	})
+}
+
+func (r *Registry) EnsureDefault(ctx context.Context) error {
+	return r.withLock(ctx, func() error {
+		if _, err := os.Stat(r.paths.StateFile); err == nil {
+			return nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("stat state file %s: %w", r.paths.StateFile, err)
+		}
+		return r.writeUnlocked(&State{
+			Version:  StateVersion,
+			Projects: map[string]Project{},
+		})
 	})
 }
 
@@ -104,39 +117,7 @@ func (r *Registry) writeUnlocked(state *State) error {
 		return fmt.Errorf("encode state: %w", err)
 	}
 	data = append(data, '\n')
-
-	tmp, err := os.CreateTemp(filepath.Dir(r.paths.StateFile), ".state-*.json")
-	if err != nil {
-		return fmt.Errorf("create temporary state file: %w", err)
-	}
-	tmpName := tmp.Name()
-	cleanup := true
-	defer func() {
-		if cleanup {
-			_ = os.Remove(tmpName)
-		}
-	}()
-
-	if err := tmp.Chmod(0o600); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("chmod temporary state file: %w", err)
-	}
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("write temporary state file: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("sync temporary state file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("close temporary state file: %w", err)
-	}
-	if err := os.Rename(tmpName, r.paths.StateFile); err != nil {
-		return fmt.Errorf("replace state file: %w", err)
-	}
-	cleanup = false
-	return nil
+	return atomicWriteFile(r.paths.StateFile, data, 0o600)
 }
 
 func (r *Registry) Project(ctx context.Context, name string) (Project, error) {

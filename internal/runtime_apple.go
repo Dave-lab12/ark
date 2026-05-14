@@ -23,6 +23,10 @@ func (r *AppleRuntime) Available(ctx context.Context) error {
 	return nil
 }
 
+func (r *AppleRuntime) ImageExists(ctx context.Context, tag string) (bool, error) {
+	return false, fmt.Errorf("Apple runtime image inspect: %w", ErrUnsupported)
+}
+
 func (r *AppleRuntime) BuildImage(ctx context.Context, spec BuildImageSpec) error {
 	return fmt.Errorf("Apple runtime image build: %w", ErrUnsupported)
 }

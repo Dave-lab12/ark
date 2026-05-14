@@ -2,7 +2,7 @@
 
 Ark is a Go CLI for one isolated development container per project. The first MVP is deliberately small: a flat Go codebase, Docker-backed persistent projects, persistent home/cache/Docker volumes, and a base Debian dev image.
 
-This pass implements the Docker lifecycle:
+This pass implements the Docker lifecycle plus the v1 Ark control-plane home:
 
 ```text
 ark init <name> --runtime docker -y
@@ -13,25 +13,39 @@ ark stop <name>
 ark rm <name> -f
 ark ls
 ark doctor
+ark image status
+ark image rebuild
+ark rebuild <name>
 ark config init
 ark config path
 ```
 
-`ark temp`, `ark code`, the Apple backend, and the Git broker are present only as stubs in this MVP.
+`ark temp` and the Apple backend are still stubs in this MVP. Docker projects support image fingerprinting and a constrained Git SSH broker.
 
 ## State And Projects
 
-Ark stores registry state at:
+Ark stores its control-plane files under:
 
 ```text
-~/.local/share/ark/state.json
+~/.ark
 ```
 
-The default project root is:
+Important paths:
 
 ```text
+~/.ark/config.toml
+~/.ark/state.json
+~/.ark/image/Containerfile
+~/.ark/image/ark-entrypoint
+~/.ark/image/ark-ssh
+~/.ark/image/state.json
+~/.ark/sockets
+~/.ark/cache
+~/.ark/logs
 ~/ark
 ```
+
+The default project root is `~/ark`, and project directories remain normal code directories. Ark metadata does not live inside `~/ark/<name>`.
 
 Each project gets a generated ULID, a stable container name, and persistent Docker volumes:
 
@@ -45,10 +59,10 @@ Project paths are mounted at `/work`. Ark does not mount the host home directory
 
 ## Config
 
-Ark reads optional user config from:
+Ark reads user config from:
 
 ```text
-~/.config/ark/config.toml
+~/.ark/config.toml
 ```
 
 Create a starter config:
@@ -57,21 +71,42 @@ Create a starter config:
 ark config init
 ```
 
-Default image config:
+Default config:
 
 ```toml
-[image]
-name = "ark-base:dev"
-build_context = ""
-containerfile = "Containerfile"
-base = "debian:bookworm-slim"
-extra_apt_packages = []
-skip_build = false
+version = 1
+runtime = "auto"
+project_root = "~/ark"
 
-[image.build_args]
+[init]
+ssh = true
+docker = true
+enter = true
+
+[image]
+tag = "ark-base:dev"
+source = "~/.ark/image"
+auto_build = true
+auto_rebuild = false
+
+[container]
+user = "dev"
+workdir = "/work"
+shell = "/bin/zsh"
+privileged = true
+
+[git]
+enabled = true
+broker_socket = "/run/ark/git-broker.sock"
+hosts = ["github.com", "gitlab.com", "bitbucket.org", "ssh.dev.azure.com"]
+
+[docker]
+enabled = true
+data_root = "/var/lib/docker"
+start_dockerd = true
 ```
 
-`build_context = ""` means Ark uses the built-in [images/base](images/base) context. To own the whole image, set `build_context` to a directory containing your own `Containerfile`. To use a prebuilt image, set `name` to that image tag and `skip_build = true`.
+On first run, Ark copies its default image source from [images/base](images/base) into `~/.ark/image`. Edit those files to customize the one v1 base image.
 
 Existing projects keep the image recorded in `state.json`; config changes affect new projects.
 
@@ -93,7 +128,7 @@ Docker-in-container is enabled by default with a persistent `/var/lib/docker` vo
 
 ## Git Broker Architecture
 
-Git-over-SSH is intentionally not implemented in this first pass, but the intended architecture is fixed:
+Git-over-SSH goes through a constrained host broker:
 
 ```text
 container git
@@ -105,7 +140,7 @@ container git
   -> github/gitlab/etc
 ```
 
-This is a Git broker, not an ssh-agent mount.
+This is a Git broker, not an ssh-agent mount. On Docker Desktop, Ark also provides an ephemeral loopback TCP fallback for the broker when the bind-mounted Unix socket cannot be connected from the container.
 
 Ark must not generate a separate SSH key by default, mount `~/.ssh`, mount `SSH_AUTH_SOCK`, expose raw ssh-agent sockets, or provide arbitrary SSH. The future broker will allow only Git SSH operations for allowed users, hosts, commands, and repo paths.
 
@@ -118,7 +153,7 @@ bitbucket.org
 ssh.dev.azure.com
 ```
 
-Default allowed commands:
+Allowed commands:
 
 ```text
 git-upload-pack
@@ -126,7 +161,7 @@ git-receive-pack
 git-upload-archive
 ```
 
-Security promise for the broker pass:
+Security promise for the broker:
 
 ```text
 A compromised Ark container can ask Ark to perform Git SSH operations against allowed Git hosts.

@@ -53,6 +53,16 @@ func (r *DockerRuntime) Available(ctx context.Context) error {
 	return nil
 }
 
+func (r *DockerRuntime) ImageExists(ctx context.Context, tag string) (bool, error) {
+	if _, _, err := r.client.ImageInspectWithRaw(ctx, tag); err != nil {
+		if errdefs.IsNotFound(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("inspect image %s: %w", tag, err)
+	}
+	return true, nil
+}
+
 func (r *DockerRuntime) BuildImage(ctx context.Context, spec BuildImageSpec) error {
 	buildContext, err := tarDirectory(spec.ContextDir)
 	if err != nil {
@@ -127,7 +137,7 @@ func (r *DockerRuntime) Create(ctx context.Context, spec CreateSpec) (string, er
 	hostConfig := &container.HostConfig{
 		Mounts:      mounts,
 		NetworkMode: networkMode,
-		Privileged:  spec.DockerEnabled,
+		Privileged:  spec.Privileged,
 	}
 
 	resp, err := r.client.ContainerCreate(ctx, config, hostConfig, &network.NetworkingConfig{}, nil, spec.Name)

@@ -9,6 +9,7 @@ import (
 type Runtime interface {
 	Name() string
 	Available(ctx context.Context) error
+	ImageExists(ctx context.Context, tag string) (bool, error)
 	BuildImage(ctx context.Context, spec BuildImageSpec) error
 
 	Create(ctx context.Context, spec CreateSpec) (string, error)
