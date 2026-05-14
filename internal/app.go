@@ -8,7 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -112,11 +111,9 @@ func (a *App) InitProject(ctx context.Context, name string, opts InitOptions) er
 			return err
 		}
 	}
-	createdVolumes := []string{}
-	for _, volumeName := range []string{project.Volumes.Home, project.Volumes.Cache, project.Volumes.Docker} {
-		if volumeName == "" {
-			continue
-		}
+	volumeNames := projectVolumeNames(project)
+	createdVolumes := make([]string, 0, len(volumeNames))
+	for _, volumeName := range volumeNames {
 		if err := rt.CreateVolume(ctx, volumeName); err != nil {
 			a.cleanupVolumes(ctx, rt, createdVolumes)
 			return err
@@ -140,13 +137,11 @@ func (a *App) InitProject(ctx context.Context, name string, opts InitOptions) er
 		return err
 	}
 
-	registered := false
 	if err := a.registry.Update(ctx, func(state *State) error {
 		if _, exists := state.Projects[name]; exists {
 			return fmt.Errorf("project %q was created concurrently", name)
 		}
 		state.Projects[name] = project
-		registered = true
 		return nil
 	}); err != nil {
 		if rmErr := rt.Remove(ctx, project.ContainerName, true); rmErr != nil && !errors.Is(rmErr, ErrNotFound) {
@@ -154,9 +149,6 @@ func (a *App) InitProject(ctx context.Context, name string, opts InitOptions) er
 		}
 		a.cleanupVolumes(ctx, rt, createdVolumes)
 		return err
-	}
-	if !registered {
-		return fmt.Errorf("project %q was not registered", name)
 	}
 
 	fmt.Fprintf(a.out, "Created project %s at %s using %s\n", project.Name, project.Path, project.Runtime)
@@ -214,7 +206,7 @@ func (a *App) RemoveProject(ctx context.Context, name string, force bool) error 
 	if err := rt.Remove(ctx, project.ContainerName, true); err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
-	for _, volumeName := range []string{project.Volumes.Home, project.Volumes.Cache, project.Volumes.Docker} {
+	for _, volumeName := range projectVolumeNames(project) {
 		if err := rt.RemoveVolume(ctx, volumeName); err != nil {
 			return err
 		}
@@ -373,12 +365,4 @@ func (a *App) confirm(prompt string) (bool, error) {
 
 func (a *App) isInteractive() bool {
 	return a.stdin != nil && a.stdout != nil && term.IsTerminal(int(a.stdin.Fd())) && term.IsTerminal(int(a.stdout.Fd()))
-}
-
-func (a *App) projectPath(name string) string {
-	path, err := a.paths.ProjectPath(name)
-	if err != nil {
-		return filepath.Join(a.paths.ProjectRoot, name)
-	}
-	return path
 }

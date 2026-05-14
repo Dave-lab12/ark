@@ -109,6 +109,17 @@ func ProjectMounts(project Project) []MountSpec {
 	return mounts
 }
 
+func projectVolumeNames(project Project) []string {
+	names := []string{
+		project.Volumes.Home,
+		project.Volumes.Cache,
+	}
+	if project.Volumes.Docker != "" {
+		names = append(names, project.Volumes.Docker)
+	}
+	return names
+}
+
 func ProjectEnv(project Project) []string {
 	env := []string{
 		"ARK_PROJECT_ID=" + project.ID,

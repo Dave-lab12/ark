@@ -211,7 +211,8 @@ func (r *DockerRuntime) Exec(ctx context.Context, containerName string, spec Exe
 
 	if spec.TTY {
 		resizeTTY(ctx, r.client, execResp.ID, spec)
-		watchTTYResize(ctx, r.client, execResp.ID, spec)
+		stopResize := watchTTYResize(ctx, r.client, execResp.ID, spec)
+		defer stopResize()
 	}
 
 	if spec.Stdin != nil {
@@ -375,24 +376,30 @@ func resizeTTY(ctx context.Context, cli *client.Client, execID string, spec Exec
 	})
 }
 
-func watchTTYResize(ctx context.Context, cli *client.Client, execID string, spec ExecSpec) {
+func watchTTYResize(ctx context.Context, cli *client.Client, execID string, spec ExecSpec) func() {
 	out, ok := spec.Stdout.(*os.File)
 	if !ok || !term.IsTerminal(int(out.Fd())) {
-		return
+		return func() {}
 	}
 	signals := make(chan os.Signal, 1)
+	done := make(chan struct{})
 	signal.Notify(signals, syscall.SIGWINCH)
 	go func() {
-		defer signal.Stop(signals)
 		for {
 			select {
 			case <-ctx.Done():
+				return
+			case <-done:
 				return
 			case <-signals:
 				resizeTTY(ctx, cli, execID, spec)
 			}
 		}
 	}()
+	return func() {
+		signal.Stop(signals)
+		close(done)
+	}
 }
 
 func writerOrDefault(w io.Writer, fallback io.Writer) io.Writer {
