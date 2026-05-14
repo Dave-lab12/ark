@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+
+      - name: Check formatting
+        run: test -z "$(gofmt -l .)"
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build
+        run: go build -o ark ./cmd/ark

@@ -5,12 +5,13 @@ import (
 	"time"
 )
 
+var ArkVersion = "dev"
+
 const (
 	RuntimeAuto   = "auto"
 	RuntimeApple  = "apple"
 	RuntimeDocker = "docker"
 
-	ArkVersion              = "dev"
 	DefaultBaseImageName    = "ark-base"
 	DefaultBaseImageTagName = "dev"
 	DefaultImageTag         = DefaultBaseImageName + ":" + DefaultBaseImageTagName
