@@ -59,10 +59,20 @@ func (r *DockerRuntime) BuildImage(ctx context.Context, spec BuildImageSpec) err
 		return err
 	}
 	defer buildContext.Close()
+	dockerfile := spec.Dockerfile
+	if dockerfile == "" {
+		dockerfile = "Containerfile"
+	}
+	buildArgs := map[string]*string{}
+	for key, value := range spec.BuildArgs {
+		v := value
+		buildArgs[key] = &v
+	}
 
 	resp, err := r.client.ImageBuild(ctx, buildContext, types.ImageBuildOptions{
 		Tags:       []string{spec.Tag},
-		Dockerfile: "Containerfile",
+		Dockerfile: dockerfile,
+		BuildArgs:  buildArgs,
 		Remove:     true,
 	})
 	if err != nil {

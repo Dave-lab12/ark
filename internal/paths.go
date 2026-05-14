@@ -12,6 +12,8 @@ import (
 
 type Paths struct {
 	DataDir     string
+	ConfigDir   string
+	ConfigFile  string
 	StateFile   string
 	LockFile    string
 	ProjectRoot string
@@ -24,9 +26,12 @@ func DefaultPaths() (Paths, error) {
 	}
 
 	dataDir := filepath.Join(dataHome(home), "ark")
+	configDir := filepath.Join(configHome(home), "ark")
 	stateFile := filepath.Join(dataDir, "state.json")
 	return Paths{
 		DataDir:     dataDir,
+		ConfigDir:   configDir,
+		ConfigFile:  filepath.Join(configDir, "config.toml"),
 		StateFile:   stateFile,
 		LockFile:    stateFile + ".lock",
 		ProjectRoot: filepath.Join(home, "ark"),
@@ -43,12 +48,26 @@ func dataHome(home string) string {
 	return filepath.Join(home, ".local", "share")
 }
 
+func configHome(home string) string {
+	if env := os.Getenv("XDG_CONFIG_HOME"); env != "" {
+		return env
+	}
+	return filepath.Join(home, ".config")
+}
+
 func (p Paths) Ensure() error {
 	if err := os.MkdirAll(p.DataDir, 0o700); err != nil {
 		return fmt.Errorf("create data directory %s: %w", p.DataDir, err)
 	}
 	if err := os.MkdirAll(p.ProjectRoot, 0o755); err != nil {
 		return fmt.Errorf("create project root %s: %w", p.ProjectRoot, err)
+	}
+	return nil
+}
+
+func (p Paths) EnsureConfigDir() error {
+	if err := os.MkdirAll(p.ConfigDir, 0o700); err != nil {
+		return fmt.Errorf("create config directory %s: %w", p.ConfigDir, err)
 	}
 	return nil
 }

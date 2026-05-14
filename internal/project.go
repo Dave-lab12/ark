@@ -15,6 +15,7 @@ var projectNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$`)
 
 var reservedProjectNames = map[string]struct{}{
 	"code":       {},
+	"config":     {},
 	"completion": {},
 	"doctor":     {},
 	"help":       {},
@@ -39,7 +40,7 @@ func ValidateProjectName(name string) error {
 	return nil
 }
 
-func NewProject(name, runtimeName, projectPath string, sshEnabled, dockerEnabled bool) (Project, error) {
+func NewProject(name, runtimeName, projectPath, image string, sshEnabled, dockerEnabled bool) (Project, error) {
 	id, err := newULID()
 	if err != nil {
 		return Project{}, err
@@ -52,7 +53,7 @@ func NewProject(name, runtimeName, projectPath string, sshEnabled, dockerEnabled
 		Runtime:       runtimeName,
 		Path:          projectPath,
 		ContainerName: containerName,
-		Image:         DefaultImageTag,
+		Image:         image,
 		Volumes: Volumes{
 			Home:   containerName + "-home",
 			Cache:  containerName + "-cache",

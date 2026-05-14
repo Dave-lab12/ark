@@ -18,3 +18,7 @@ Thumbs.db
 .idea/
 .vscode/
 *.swp
+
+
+.gomodcache
+.gocache

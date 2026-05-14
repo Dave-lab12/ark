@@ -18,6 +18,7 @@ import (
 
 type App struct {
 	paths    Paths
+	config   Config
 	registry *Registry
 	in       io.Reader
 	out      io.Writer
@@ -38,8 +39,13 @@ func NewApp(in io.Reader, out, errOut io.Writer) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	config, err := LoadConfig(paths)
+	if err != nil {
+		return nil, err
+	}
 	app := &App{
 		paths:    paths,
+		config:   config,
 		registry: NewRegistry(paths),
 		in:       in,
 		out:      out,
@@ -94,13 +100,17 @@ func (a *App) InitProject(ctx context.Context, name string, opts InitOptions) er
 		return fmt.Errorf("create project directory %s: %w", projectPath, err)
 	}
 
-	project, err := NewProject(name, selectedRuntime, projectPath, opts.SSHEnabled, opts.DockerEnabled)
+	project, err := NewProject(name, selectedRuntime, projectPath, a.config.Image.Name, opts.SSHEnabled, opts.DockerEnabled)
 	if err != nil {
 		return err
 	}
 
-	if err := BuildBaseImage(ctx, rt, a.out, a.errOut); err != nil {
-		return err
+	if a.config.Image.SkipBuild {
+		fmt.Fprintf(a.out, "Using configured image %s without building\n", project.Image)
+	} else {
+		if err := BuildBaseImage(ctx, rt, a.config, a.out, a.errOut); err != nil {
+			return err
+		}
 	}
 	createdVolumes := []string{}
 	for _, volumeName := range []string{project.Volumes.Home, project.Volumes.Cache, project.Volumes.Docker} {

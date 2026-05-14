@@ -25,6 +25,8 @@ func (a *App) Doctor(ctx context.Context) error {
 	}
 
 	fmt.Fprintf(a.out, "state: %s\n", a.paths.StateFile)
+	fmt.Fprintf(a.out, "config: %s\n", a.paths.ConfigFile)
 	fmt.Fprintf(a.out, "projects: %s\n", a.paths.ProjectRoot)
+	fmt.Fprintf(a.out, "image: %s\n", a.config.Image.Name)
 	return nil
 }

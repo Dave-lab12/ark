@@ -1,6 +1,8 @@
-FROM debian:bookworm-slim
+ARG ARK_BASE_IMAGE=debian:bookworm-slim
+FROM ${ARK_BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
+ARG ARK_EXTRA_APT_PACKAGES=""
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -24,6 +26,7 @@ RUN apt-get update \
         wget \
         xz-utils \
         zsh \
+        ${ARK_EXTRA_APT_PACKAGES} \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
     && chmod a+r /etc/apt/keyrings/docker.asc \

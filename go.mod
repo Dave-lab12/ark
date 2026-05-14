@@ -3,6 +3,7 @@ module ark
 go 1.26.3
 
 require (
+	github.com/BurntSushi/toml v1.5.0
 	github.com/adrg/xdg v0.5.3
 	github.com/docker/docker v24.0.9+incompatible
 	github.com/gofrs/flock v0.13.0

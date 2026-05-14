@@ -13,6 +13,8 @@ ark stop <name>
 ark rm <name> -f
 ark ls
 ark doctor
+ark config init
+ark config path
 ```
 
 `ark temp`, `ark code`, the Apple backend, and the Git broker are present only as stubs in this MVP.
@@ -40,6 +42,38 @@ ark-<ULID>-docker
 ```
 
 Project paths are mounted at `/work`. Ark does not mount the host home directory, host `~/.ssh`, host package caches, or the host Docker socket.
+
+## Config
+
+Ark reads optional user config from:
+
+```text
+~/.config/ark/config.toml
+```
+
+Create a starter config:
+
+```sh
+ark config init
+```
+
+Default image config:
+
+```toml
+[image]
+name = "ark-base:dev"
+build_context = ""
+containerfile = "Containerfile"
+base = "debian:bookworm-slim"
+extra_apt_packages = []
+skip_build = false
+
+[image.build_args]
+```
+
+`build_context = ""` means Ark uses the built-in [images/base](images/base) context. To own the whole image, set `build_context` to a directory containing your own `Containerfile`. To use a prebuilt image, set `name` to that image tag and `skip_build = true`.
+
+Existing projects keep the image recorded in `state.json`; config changes affect new projects.
 
 ## Runtime Detection
 
@@ -131,7 +165,7 @@ Docker-in-container privilege needed for nested Docker
 Build the CLI:
 
 ```sh
-go build ./cmd/ark
+go build -o ark ./cmd/ark
 ```
 
 Run the Docker lifecycle:

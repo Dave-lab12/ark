@@ -58,6 +58,7 @@ func (a *App) rootCommand(ctx context.Context) *cobra.Command {
 	root.AddCommand(a.listCommand())
 	root.AddCommand(a.tempCommand())
 	root.AddCommand(a.codeCommand())
+	root.AddCommand(a.configCommand())
 	root.AddCommand(a.doctorCommand())
 	return root
 }
@@ -155,6 +156,42 @@ func (a *App) codeCommand() *cobra.Command {
 			return a.Code(cmd.Context(), args[0])
 		},
 	}
+}
+
+func (a *App) configCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "config",
+		Short: "Manage Ark config",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Fprintln(a.out, a.paths.ConfigFile)
+			return nil
+		},
+	}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "path",
+		Short: "Print config file path",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Fprintln(a.out, a.paths.ConfigFile)
+			return nil
+		},
+	})
+	var force bool
+	initCmd := &cobra.Command{
+		Use:   "init",
+		Short: "Create a sample config file",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if err := WriteDefaultConfig(a.paths, force); err != nil {
+				return err
+			}
+			fmt.Fprintf(a.out, "Wrote %s\n", a.paths.ConfigFile)
+			return nil
+		},
+	}
+	initCmd.Flags().BoolVarP(&force, "force", "f", false, "overwrite existing config")
+	cmd.AddCommand(initCmd)
+	return cmd
 }
 
 func (a *App) doctorCommand() *cobra.Command {

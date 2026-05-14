@@ -10,18 +10,13 @@ import (
 	"path/filepath"
 )
 
-func BuildBaseImage(ctx context.Context, rt Runtime, out, errOut io.Writer) error {
-	contextDir, err := FindBaseImageContext()
+func BuildBaseImage(ctx context.Context, rt Runtime, config Config, out, errOut io.Writer) error {
+	spec, err := config.BuildImageSpec(out, errOut)
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(out, "Building %s from %s\n", DefaultImageTag, contextDir)
-	return rt.BuildImage(ctx, BuildImageSpec{
-		ContextDir: contextDir,
-		Tag:        DefaultImageTag,
-		Out:        out,
-		Err:        errOut,
-	})
+	fmt.Fprintf(out, "Building %s from %s\n", spec.Tag, spec.ContextDir)
+	return rt.BuildImage(ctx, spec)
 }
 
 func FindBaseImageContext() (string, error) {

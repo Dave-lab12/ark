@@ -10,8 +10,9 @@ const (
 	RuntimeApple  = "apple"
 	RuntimeDocker = "docker"
 
-	DefaultImageTag = "ark-base:dev"
-	StateVersion    = 1
+	DefaultImageTag  = "ark-base:dev"
+	DefaultBaseImage = "debian:bookworm-slim"
+	StateVersion     = 1
 )
 
 type State struct {
@@ -50,7 +51,9 @@ type Container struct {
 
 type BuildImageSpec struct {
 	ContextDir string
+	Dockerfile string
 	Tag        string
+	BuildArgs  map[string]string
 	Out        io.Writer
 	Err        io.Writer
 }
