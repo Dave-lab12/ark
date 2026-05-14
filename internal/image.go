@@ -2,8 +2,10 @@ package internal
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"crypto/sha256"
+	"embed"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -12,12 +14,28 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
+
+//go:embed image_assets/Containerfile image_assets/ark-entrypoint image_assets/ark-ssh
+var embeddedBaseImageFS embed.FS
 
 var fingerprintFiles = []string{
 	"Containerfile",
 	"ark-entrypoint",
 	"ark-ssh",
+}
+
+type embeddedImageAsset struct {
+	Name string
+	Path string
+	Perm fs.FileMode
+}
+
+var embeddedImageAssets = []embeddedImageAsset{
+	{Name: "Containerfile", Path: "image_assets/Containerfile", Perm: 0o644},
+	{Name: "ark-entrypoint", Path: "image_assets/ark-entrypoint", Perm: 0o755},
+	{Name: "ark-ssh", Path: "image_assets/ark-ssh", Perm: 0o755},
 }
 
 func BuildBaseImage(ctx context.Context, rt Runtime, config Config, out, errOut io.Writer) error {
@@ -63,68 +81,52 @@ func EnsureImageSource(config Config) error {
 	if err := os.MkdirAll(source, 0o700); err != nil {
 		return fmt.Errorf("create image source directory %s: %w", source, err)
 	}
-	defaultSource, err := FindBaseImageContext()
-	if err != nil {
-		return err
-	}
-	for _, name := range fingerprintFiles {
-		dst := filepath.Join(source, name)
-		if _, err := os.Stat(dst); err == nil {
-			continue
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("stat image source file %s: %w", dst, err)
-		}
-		src := filepath.Join(defaultSource, name)
-		data, err := os.ReadFile(src)
+	overwrite := config.usesDefaultImageSource(source)
+	for _, asset := range embeddedImageAssets {
+		dst := filepath.Join(source, asset.Name)
+		data, err := readEmbeddedImageAsset(asset)
 		if err != nil {
-			return fmt.Errorf("read default image source %s: %w", src, err)
+			return err
 		}
-		info, err := os.Stat(src)
-		if err != nil {
-			return fmt.Errorf("stat default image source %s: %w", src, err)
+		if overwrite {
+			current, err := os.ReadFile(dst)
+			if err == nil && bytes.Equal(current, data) {
+				if chmodErr := os.Chmod(dst, asset.Perm); chmodErr != nil {
+					return fmt.Errorf("chmod image source file %s: %w", dst, chmodErr)
+				}
+				continue
+			}
+			if err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("read image source file %s: %w", dst, err)
+			}
+		} else {
+			if _, err := os.Stat(dst); err == nil {
+				continue
+			} else if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("stat image source file %s: %w", dst, err)
+			}
 		}
-		perm := info.Mode().Perm()
-		if perm == 0 {
-			perm = 0o600
-		}
-		if err := atomicWriteFile(dst, data, perm); err != nil {
+		if err := atomicWriteFile(dst, data, asset.Perm); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func FindBaseImageContext() (string, error) {
-	cwd, err := os.Getwd()
-	if err == nil {
-		if path, ok := findImageContextUpward(cwd); ok {
-			return path, nil
-		}
+func readEmbeddedImageAsset(asset embeddedImageAsset) ([]byte, error) {
+	data, err := embeddedBaseImageFS.ReadFile(asset.Path)
+	if err != nil {
+		return nil, fmt.Errorf("read embedded image source %s: %w", asset.Path, err)
 	}
-
-	exe, err := os.Executable()
-	if err == nil {
-		if path, ok := findImageContextUpward(filepath.Dir(exe)); ok {
-			return path, nil
-		}
-	}
-
-	return "", fmt.Errorf("find images/base/Containerfile: run ark from the source tree for this MVP")
+	return data, nil
 }
 
-func findImageContextUpward(start string) (string, bool) {
-	dir := start
-	for {
-		candidate := filepath.Join(dir, "images", "base")
-		if _, err := os.Stat(filepath.Join(candidate, "Containerfile")); err == nil {
-			return candidate, true
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return "", false
-		}
-		dir = parent
+func (c Config) usesDefaultImageSource(source string) bool {
+	defaultSource, err := DefaultConfig().ImageSourcePath()
+	if err != nil {
+		return strings.TrimSpace(c.Image.Source) == DefaultConfig().Image.Source
 	}
+	return filepath.Clean(source) == filepath.Clean(defaultSource)
 }
 
 func tarDirectory(root string) (io.ReadCloser, error) {

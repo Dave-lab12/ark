@@ -64,6 +64,7 @@ func (a *App) rootCommand(ctx context.Context) *cobra.Command {
 	root.AddCommand(a.imageCommand())
 	root.AddCommand(a.rebuildCommand())
 	root.AddCommand(a.doctorCommand())
+	root.AddCommand(a.updateCommand())
 	return root
 }
 

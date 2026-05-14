@@ -27,6 +27,7 @@ var reservedProjectNames = map[string]struct{}{
 	"start":      {},
 	"stop":       {},
 	"temp":       {},
+	"update":     {},
 }
 
 func ValidateProjectName(name string) error {

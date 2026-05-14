@@ -18,6 +18,7 @@ ark image rebuild
 ark rebuild <name>
 ark config init
 ark config path
+ark update
 ```
 
 `ark temp` and the Apple backend are still stubs in this MVP. Docker projects support image fingerprinting and a constrained Git SSH broker.
@@ -106,7 +107,7 @@ data_root = "/var/lib/docker"
 start_dockerd = true
 ```
 
-On first run, Ark copies its default image source from [images/base](images/base) into `~/.ark/image`. Edit those files to customize the one v1 base image.
+Ark embeds its default image source in the `ark` binary and syncs it into `~/.ark/image`, so an installed binary can rebuild the base image from any directory. The default `~/.ark/image` source is managed by Ark; to customize the one v1 base image, point `[image].source` at a separate directory with your own `Containerfile`, `ark-entrypoint`, and `ark-ssh`.
 
 Existing projects keep the image recorded in `state.json`; config changes affect new projects.
 
