@@ -58,4 +58,10 @@ RUN chmod 0755 /usr/local/bin/ark-entrypoint /usr/local/bin/ark-ssh
 
 WORKDIR /work
 
+ENV SHELL=/usr/bin/zsh
+ENV GIT_SSH=/usr/local/bin/ark-ssh
+
+ENV USER=dev
+ENV HOME=/home/dev
+
 ENTRYPOINT ["/usr/local/bin/ark-entrypoint"]
