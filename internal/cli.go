@@ -10,6 +10,10 @@ import (
 )
 
 func Main(ctx context.Context, args []string) int {
+	if isVersionArgList(args) {
+		fmt.Fprintln(os.Stdout, VersionString())
+		return 0
+	}
 	app, err := NewApp(os.Stdin, os.Stdout, os.Stderr)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -29,7 +33,7 @@ func (a *App) Execute(ctx context.Context, args []string) error {
 	if err := a.Prepare(ctx); err != nil {
 		return err
 	}
-	if len(args) > 0 && !isKnownCommand(args[0]) && args[0] != "--help" && args[0] != "-h" {
+	if shouldRunProject(args) {
 		return a.RunProject(ctx, args[0], args[1:])
 	}
 	root := a.rootCommand(ctx)
@@ -38,12 +42,17 @@ func (a *App) Execute(ctx context.Context, args []string) error {
 }
 
 func (a *App) rootCommand(ctx context.Context) *cobra.Command {
+	var printVersion bool
 	root := &cobra.Command{
 		Use:           "ark",
 		Short:         "Isolated development containers per project",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if printVersion {
+				fmt.Fprintln(a.out, VersionString())
+				return nil
+			}
 			if len(args) > 0 {
 				return a.RunProject(cmd.Context(), args[0], args[1:])
 			}
@@ -53,6 +62,7 @@ func (a *App) rootCommand(ctx context.Context) *cobra.Command {
 	root.SetIn(a.in)
 	root.SetOut(a.out)
 	root.SetErr(a.errOut)
+	root.Flags().BoolVarP(&printVersion, "version", "v", false, "print version and build number")
 
 	root.AddCommand(a.initCommand())
 	root.AddCommand(a.startCommand())
@@ -65,7 +75,20 @@ func (a *App) rootCommand(ctx context.Context) *cobra.Command {
 	root.AddCommand(a.rebuildCommand())
 	root.AddCommand(a.doctorCommand())
 	root.AddCommand(a.updateCommand())
+	root.AddCommand(a.versionCommand())
 	return root
+}
+
+func (a *App) versionCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print version and build number",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Fprintln(a.out, VersionString())
+			return nil
+		},
+	}
 }
 
 func (a *App) initCommand() *cobra.Command {
@@ -203,4 +226,26 @@ func (a *App) doctorCommand() *cobra.Command {
 func isKnownCommand(arg string) bool {
 	_, ok := reservedProjectNames[arg]
 	return ok
+}
+
+func shouldRunProject(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	if isKnownCommand(args[0]) || isHelpArg(args[0]) || isVersionArg(args[0]) {
+		return false
+	}
+	return true
+}
+
+func isHelpArg(arg string) bool {
+	return arg == "--help" || arg == "-h"
+}
+
+func isVersionArg(arg string) bool {
+	return arg == "--version" || arg == "-v"
+}
+
+func isVersionArgList(args []string) bool {
+	return len(args) == 1 && (isVersionArg(args[0]) || args[0] == "version")
 }

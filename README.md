@@ -18,6 +18,7 @@ ark image rebuild
 ark rebuild <name>
 ark config init
 ark config path
+ark -v
 ark update
 ```
 

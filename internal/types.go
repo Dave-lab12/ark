@@ -1,11 +1,26 @@
 package internal
 
 import (
+	"fmt"
 	"io"
+	"strings"
 	"time"
 )
 
 var ArkVersion = "dev"
+var ArkBuild = "dev"
+
+func VersionString() string {
+	version := strings.TrimSpace(ArkVersion)
+	if version == "" {
+		version = "dev"
+	}
+	build := strings.TrimSpace(ArkBuild)
+	if build == "" {
+		build = "dev"
+	}
+	return fmt.Sprintf("ark %s (build %s)", version, build)
+}
 
 const (
 	RuntimeAuto   = "auto"

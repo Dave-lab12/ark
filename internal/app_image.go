@@ -186,8 +186,7 @@ func (a *App) ensureBaseImage(ctx context.Context, rt Runtime, runtimeName strin
 			}
 			return ImageInfo{Tag: status.Tag, Fingerprint: status.Expected}, nil
 		}
-		fmt.Fprintf(a.errOut, "Ark base image %s is stale.\nRun: ark image rebuild\n", status.Tag)
-		return ImageInfo{Tag: status.Tag, Fingerprint: status.Built}, nil
+		return ImageInfo{}, fmt.Errorf("ark base image %s is stale. Run 'ark image rebuild' first to update the blueprint", status.Tag)
 	default:
 		return ImageInfo{}, fmt.Errorf("unknown image status %q", status.Status)
 	}
