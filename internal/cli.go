@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -39,7 +40,14 @@ func (a *App) Execute(ctx context.Context, args []string) error {
 	root := a.rootCommand(ctx)
 	a.reserved = collectReservedNames(root)
 	if a.shouldRunProject(args) {
-		return a.RunProject(ctx, args[0], args[1:])
+		if len(args) >= 2 && isHelpArg(args[1]) {
+			return a.printProjectHelp(ctx, args[0])
+		}
+		cmdArgs, ports, err := parsePortOptionsFromArgs(args[1:])
+		if err != nil {
+			return err
+		}
+		return a.RunProject(ctx, args[0], cmdArgs, ports)
 	}
 	root.SetArgs(args)
 	return root.ExecuteContext(ctx)
@@ -61,6 +69,7 @@ func collectReservedNames(root *cobra.Command) map[string]struct{} {
 
 func (a *App) rootCommand(ctx context.Context) *cobra.Command {
 	var printVersion bool
+	var ports PortOptions
 	root := &cobra.Command{
 		Use:           "ark",
 		Short:         "Isolated development containers per project",
@@ -71,16 +80,26 @@ func (a *App) rootCommand(ctx context.Context) *cobra.Command {
 				fmt.Fprintln(a.out, VersionString())
 				return nil
 			}
-			if len(args) > 0 {
-				return a.RunProject(cmd.Context(), args[0], args[1:])
+			normalizedPorts, err := normalizePortOptions(ports)
+			if err != nil {
+				return err
 			}
-			return a.RunDefault(cmd.Context())
+			if len(args) > 0 {
+				return a.RunProject(cmd.Context(), args[0], args[1:], normalizedPorts)
+			}
+			return a.RunDefault(cmd.Context(), normalizedPorts)
 		},
 	}
 	root.SetIn(a.in)
 	root.SetOut(a.out)
 	root.SetErr(a.errOut)
+	root.AddGroup(
+		&cobra.Group{ID: "projects", Title: "PROJECTS"},
+		&cobra.Group{ID: "ark", Title: "ARK"},
+	)
+	root.SetHelpTemplate(helpTemplate)
 	root.Flags().BoolVarP(&printVersion, "version", "v", false, "print version and build number")
+	addPortFlags(root, &ports)
 
 	root.AddCommand(a.initCommand())
 	root.AddCommand(a.startCommand())
@@ -99,9 +118,10 @@ func (a *App) rootCommand(ctx context.Context) *cobra.Command {
 
 func (a *App) versionCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "version",
-		Short: "Print version and build number",
-		Args:  cobra.NoArgs,
+		Use:     "version",
+		Short:   "print version",
+		GroupID: "ark",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(a.out, VersionString())
 			return nil
@@ -119,38 +139,53 @@ func (a *App) initCommand() *cobra.Command {
 	var noSSH bool
 	var noDocker bool
 	cmd := &cobra.Command{
-		Use:   "init <name>",
-		Short: "Create a persistent project",
-		Args:  cobra.ExactArgs(1),
+		Use:     "init <name>",
+		Short:   "create a project",
+		GroupID: "projects",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			opts.SSHEnabled = a.config.Init.SSH && !noSSH
 			opts.DockerEnabled = a.config.Init.Docker && a.config.Docker.Enabled && !noDocker
+			ports, err := normalizePortOptions(opts.Ports)
+			if err != nil {
+				return err
+			}
+			opts.Ports = ports
 			return a.InitProject(cmd.Context(), args[0], opts)
 		},
 	}
 	cmd.Flags().StringVar(&opts.Runtime, "runtime", a.config.Runtime, "runtime: auto, apple, or docker")
-	cmd.Flags().BoolVarP(&opts.AssumeYes, "yes", "y", false, "skip confirmation prompts")
 	cmd.Flags().BoolVar(&noSSH, "no-ssh", false, "disable Git-over-SSH broker support for this project")
 	cmd.Flags().BoolVar(&noDocker, "no-docker", false, "disable Docker-in-container for this project")
+	addPortFlags(cmd, &opts.Ports)
 	return cmd
 }
 
 func (a *App) startCommand() *cobra.Command {
-	return &cobra.Command{
-		Use:   "start <name>",
-		Short: "Start a project and enter it",
-		Args:  cobra.ExactArgs(1),
+	var ports PortOptions
+	cmd := &cobra.Command{
+		Use:     "start <name>",
+		Short:   "start a project without entering",
+		GroupID: "projects",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return a.StartProject(cmd.Context(), args[0], true)
+			ports, err := normalizePortOptions(ports)
+			if err != nil {
+				return err
+			}
+			return a.StartProject(cmd.Context(), args[0], false, ports)
 		},
 	}
+	addPortFlags(cmd, &ports)
+	return cmd
 }
 
 func (a *App) stopCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "stop <name>",
-		Short: "Stop a project",
-		Args:  cobra.ExactArgs(1),
+		Use:     "stop <name>",
+		Short:   "stop a project",
+		GroupID: "projects",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.StopProject(cmd.Context(), args[0])
 		},
@@ -162,7 +197,8 @@ func (a *App) removeCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "rm <name>",
 		Aliases: []string{"remove"},
-		Short:   "Remove a project container and volumes",
+		Short:   "delete a project and its volumes",
+		GroupID: "projects",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.RemoveProject(cmd.Context(), args[0], force)
@@ -174,9 +210,10 @@ func (a *App) removeCommand() *cobra.Command {
 
 func (a *App) listCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "ls",
-		Short: "List projects",
-		Args:  cobra.NoArgs,
+		Use:     "ls",
+		Short:   "list projects",
+		GroupID: "projects",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.ListProjects(cmd.Context())
 		},
@@ -185,9 +222,11 @@ func (a *App) listCommand() *cobra.Command {
 
 func (a *App) tempCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "temp [cmd...]",
-		Short: "Run an ephemeral container",
-		Args:  cobra.ArbitraryArgs,
+		Use:     "temp [cmd...]",
+		Short:   "Run an ephemeral container",
+		GroupID: "projects",
+		Hidden:  true,
+		Args:    cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return errors.New("ark temp is not implemented in the Docker lifecycle MVP")
 		},
@@ -196,8 +235,9 @@ func (a *App) tempCommand() *cobra.Command {
 
 func (a *App) configCommand() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "config",
-		Short: "Manage Ark config",
+		Use:     "config",
+		Short:   "show or edit ark config",
+		GroupID: "ark",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(a.out, a.paths.ConfigFile)
 			return nil
@@ -232,17 +272,45 @@ func (a *App) configCommand() *cobra.Command {
 
 func (a *App) doctorCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "doctor",
-		Short: "Check local setup",
-		Args:  cobra.NoArgs,
+		Use:     "doctor",
+		Short:   "check local setup",
+		GroupID: "ark",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.Doctor(cmd.Context())
 		},
 	}
 }
 
+const helpTemplate = `{{if .Long}}{{.Long}}{{else}}{{.Short}}{{end}}
+
+USAGE
+  ark <name> [args...]          enter or run in a project
+  ark <command> [args...]       manage projects and ark itself
+
+{{- range .Groups}}
+{{$group := .}}
+{{.Title}}{{range $.Commands}}{{if and (eq .GroupID $group.ID) (not .Hidden)}}
+  {{rpad .Name 12}}{{.Short}}{{end}}{{end}}
+{{- end}}
+
+INSIDE A PROJECT
+  <name>                       enter the project shell
+  <name> <cmd...>              run a command in the project
+  <name> --port 3000           add a port (sticky across stop/start)
+  <name> --port -3000          remove a port
+  <name> --port =3000,8080:80  replace all ports
+  <name> --ports               show this project's ports
+  <name> --no-ports            clear all ports
+
+"ark <command> --help" for details on any command.
+`
+
 func (a *App) shouldRunProject(args []string) bool {
 	if len(args) == 0 {
+		return false
+	}
+	if strings.HasPrefix(args[0], "-") {
 		return false
 	}
 	if _, reserved := a.reserved[args[0]]; reserved {
@@ -264,4 +332,43 @@ func isVersionArg(arg string) bool {
 
 func isVersionArgList(args []string) bool {
 	return len(args) == 1 && (isVersionArg(args[0]) || args[0] == "version")
+}
+
+func addPortFlags(cmd *cobra.Command, ports *PortOptions) {
+	cmd.Flags().StringSliceVar(&ports.Specs, "port", nil,
+		"expose ports; use --port 3000, --port -3000 to remove, --port =3000 to replace")
+	cmd.Flags().BoolVar(&ports.Clear, "no-ports", false, "remove all configured ports")
+	cmd.Flags().BoolVar(&ports.List, "ports", false, "list current ports without changing them")
+}
+
+func parsePortOptionsFromArgs(args []string) ([]string, PortOptions, error) {
+	var cmdArgs []string
+	var ports PortOptions
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--":
+			cmdArgs = append(cmdArgs, args[i+1:]...)
+			i = len(args)
+		case arg == "--port":
+			if i+1 >= len(args) {
+				return nil, ports, errors.New("flag needs an argument: --port")
+			}
+			ports.Specs = append(ports.Specs, args[i+1])
+			i++
+		case strings.HasPrefix(arg, "--port="):
+			ports.Specs = append(ports.Specs, strings.TrimPrefix(arg, "--port="))
+		case arg == "--no-ports":
+			ports.Clear = true
+		case arg == "--ports":
+			ports.List = true
+		default:
+			cmdArgs = append(cmdArgs, arg)
+		}
+	}
+	normalized, err := normalizePortOptions(ports)
+	if err != nil {
+		return nil, normalized, err
+	}
+	return cmdArgs, normalized, nil
 }

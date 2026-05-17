@@ -20,6 +20,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/docker/go-connections/nat"
 	"golang.org/x/term"
 )
 
@@ -141,6 +142,32 @@ func (r *DockerRuntime) Create(ctx context.Context, spec CreateSpec) (string, er
 		// it resolve to the host so the Git broker's TCP fallback works there.
 		// No-op on Docker Desktop where the mapping already exists.
 		ExtraHosts: []string{"host.docker.internal:host-gateway"},
+	}
+
+	if len(spec.Ports) > 0 {
+		exposed := nat.PortSet{}
+		bindings := nat.PortMap{}
+		for _, p := range spec.Ports {
+			proto := p.Protocol
+			if proto == "" {
+				proto = "tcp"
+			}
+			port, err := nat.NewPort(proto, p.ContainerPort)
+			if err != nil {
+				return "", fmt.Errorf("port %s/%s: %w", p.ContainerPort, proto, err)
+			}
+			exposed[port] = struct{}{}
+			hostIP := p.HostIP
+			if hostIP == "" {
+				hostIP = "127.0.0.1"
+			}
+			bindings[port] = append(bindings[port], nat.PortBinding{
+				HostIP:   hostIP,
+				HostPort: p.HostPort,
+			})
+		}
+		config.ExposedPorts = exposed
+		hostConfig.PortBindings = bindings
 	}
 
 	resp, err := r.client.ContainerCreate(ctx, config, hostConfig, &network.NetworkingConfig{}, nil, spec.Name)
@@ -280,14 +307,29 @@ func (r *DockerRuntime) Inspect(ctx context.Context, containerName string) (*Con
 		}
 		return nil, fmt.Errorf("inspect container %s: %w", containerName, err)
 	}
-	return &Container{
+	c := &Container{
 		ID:      inspect.ID,
 		Name:    strings.TrimPrefix(inspect.Name, "/"),
 		Image:   inspect.Config.Image,
 		Status:  inspect.State.Status,
 		Running: inspect.State.Running,
 		Runtime: RuntimeDocker,
-	}, nil
+	}
+	if inspect.NetworkSettings != nil {
+		for portProto, bindings := range inspect.NetworkSettings.Ports {
+			proto := portProto.Proto()
+			containerPort := portProto.Port()
+			for _, b := range bindings {
+				c.Ports = append(c.Ports, PortMapping{
+					HostIP:        b.HostIP,
+					HostPort:      b.HostPort,
+					ContainerPort: containerPort,
+					Protocol:      proto,
+				})
+			}
+		}
+	}
+	return c, nil
 }
 
 func (r *DockerRuntime) List(ctx context.Context) ([]Container, error) {

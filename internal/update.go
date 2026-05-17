@@ -32,9 +32,10 @@ type githubRelease struct {
 func (a *App) updateCommand() *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
-		Use:   "update",
-		Short: "Update Ark to the latest released binary",
-		Args:  cobra.NoArgs,
+		Use:     "update",
+		Short:   "update ark itself",
+		GroupID: "ark",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.Update(cmd.Context(), force)
 		},

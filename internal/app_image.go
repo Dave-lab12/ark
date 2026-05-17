@@ -21,8 +21,9 @@ type imageStatus struct {
 func (a *App) imageCommand() *cobra.Command {
 	var runtimeName string
 	cmd := &cobra.Command{
-		Use:   "image",
-		Short: "Manage Ark base images",
+		Use:     "image",
+		Short:   "manage the base image",
+		GroupID: "ark",
 	}
 	cmd.PersistentFlags().StringVar(&runtimeName, "runtime", a.config.Runtime, "runtime: auto, apple, or docker")
 	cmd.AddCommand(&cobra.Command{
@@ -46,9 +47,10 @@ func (a *App) imageCommand() *cobra.Command {
 
 func (a *App) rebuildCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "rebuild <name>",
-		Short: "Recreate one project container from the current base image",
-		Args:  cobra.ExactArgs(1),
+		Use:     "rebuild <name>",
+		Short:   "recreate from the current base image",
+		GroupID: "projects",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.RebuildProject(cmd.Context(), args[0])
 		},
@@ -123,19 +125,7 @@ func (a *App) RebuildProject(ctx context.Context, name string) error {
 	}
 	project.Image = a.config.Image.Tag
 	project.ImageFingerprint = imageInfo.Fingerprint
-	if _, err := rt.Create(ctx, CreateSpec{
-		Name:          project.ContainerName,
-		Image:         project.Image,
-		ProjectName:   project.Name,
-		ProjectID:     project.ID,
-		ProjectPath:   project.Path,
-		Workdir:       a.config.Container.Workdir,
-		Env:           ProjectEnv(project, a.config),
-		Mounts:        a.projectMounts(project),
-		DockerEnabled: project.DockerEnabled,
-		Privileged:    a.config.Container.Privileged,
-		Network:       true,
-	}); err != nil {
+	if err := a.createProjectContainer(ctx, rt, project); err != nil {
 		return err
 	}
 	if err := a.registry.Update(ctx, func(state *State) error {

@@ -5,9 +5,13 @@ Ark is a Go CLI for one isolated development container per project. The first MV
 This pass implements the Docker lifecycle plus the v1 Ark control-plane home:
 
 ```text
-ark init <name> --runtime docker -y
+ark init <name> --runtime docker
 ark <name>
 ark <name> <cmd...>
+ark <name> --port 3000
+ark <name> --port -3000
+ark <name> --ports
+ark <name> --no-ports
 ark start <name>
 ark stop <name>
 ark rm <name> -f
@@ -128,6 +132,45 @@ Project containers run a long-lived entrypoint (`sleep infinity`) so leaving an 
 
 Docker-in-container is enabled by default with a persistent `/var/lib/docker` volume. Ark does not mount `/var/run/docker.sock` from the host.
 
+## Exposing Ports
+
+Ports are sticky on the project. Add or remove them with `--port`:
+
+```sh
+ark mindplex --port 3000          # add 3000
+ark mindplex --port 3000,3001     # add multiple
+ark mindplex --port -3001         # remove 3001
+ark mindplex --port =3000         # replace all with just 3000
+ark mindplex --ports              # list current ports
+ark mindplex --no-ports           # clear all ports
+```
+
+Forms accepted:
+
+```text
+3000                  127.0.0.1:3000 -> 3000/tcp (default)
+8080:80               127.0.0.1:8080 -> 80/tcp
+0.0.0.0:8080:80       bind to all interfaces (use with care)
+0:3000                dynamic host port (ark prints the assignment)
+3000/udp              UDP
+```
+
+Ports persist across stop/start. `ark stop` releases the host sockets;
+`ark <name>` re-publishes them. `ark rm` clears the project entirely.
+
+The default host bind is 127.0.0.1, not 0.0.0.0 - services exposed
+through ark are reachable only from the host by default. Use the
+explicit `0.0.0.0:HOST:CONTAINER` form to expose on the LAN.
+
+Servers inside the container must bind to 0.0.0.0 (or ::), not
+127.0.0.1, or port forwarding cannot reach them. This is the
+single most common port-forwarding gotcha.
+
+Changing ports recreates the container. /work and home/cache/docker
+volumes are preserved; processes running in the container are not.
+You will be asked once per project to confirm; subsequent changes
+proceed without prompting.
+
 ## Git Broker Architecture
 
 Git-over-SSH goes through a constrained host broker:
@@ -208,7 +251,7 @@ go build -o ark ./cmd/ark
 Run the Docker lifecycle:
 
 ```sh
-./ark init app --runtime docker -y
+./ark init app --runtime docker
 ./ark app echo hello
 ./ark app
 ./ark app pwd
@@ -221,7 +264,7 @@ Run the Docker lifecycle:
 Check exit-code propagation:
 
 ```sh
-./ark init exits --runtime docker -y
+./ark init exits --runtime docker
 ./ark exits sh -lc 'exit 7'
 echo $?
 ./ark rm exits -f
@@ -230,7 +273,7 @@ echo $?
 Check that host SSH material is not mounted:
 
 ```sh
-./ark init sshcheck --runtime docker -y
+./ark init sshcheck --runtime docker
 ./ark sshcheck sh -lc 'test ! -d ~/.ssh && test -z "$SSH_AUTH_SOCK"'
 ./ark rm sshcheck -f
 ```

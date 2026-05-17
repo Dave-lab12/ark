@@ -17,16 +17,17 @@ import (
 )
 
 type App struct {
-	paths    Paths
-	config   Config
-	registry *Registry
-	images   *ImageStore
-	reserved map[string]struct{}
-	in       io.Reader
-	out      io.Writer
-	errOut   io.Writer
-	stdin    *os.File
-	stdout   *os.File
+	paths         Paths
+	config        Config
+	registry      *Registry
+	images        *ImageStore
+	reserved      map[string]struct{}
+	runtimeByName func(string) (Runtime, error)
+	in            io.Reader
+	out           io.Writer
+	errOut        io.Writer
+	stdin         *os.File
+	stdout        *os.File
 }
 
 type InitOptions struct {
@@ -34,7 +35,35 @@ type InitOptions struct {
 	SSHEnabled    bool
 	DockerEnabled bool
 	Enter         bool
-	AssumeYes     bool
+	Ports         PortOptions
+}
+
+type PortOptions struct {
+	Specified bool
+	Specs     []string
+	Clear     bool
+	List      bool
+}
+
+func normalizePortOptions(ports PortOptions) (PortOptions, error) {
+	ports.Specified = ports.Specified || len(ports.Specs) > 0 || ports.Clear || ports.List
+	if len(ports.Specs) > 0 && ports.Clear {
+		return ports, errors.New("--port and --no-ports are mutually exclusive")
+	}
+	if ports.List && (len(ports.Specs) > 0 || ports.Clear) {
+		return ports, errors.New("--ports lists current ports and cannot be combined with --port or --no-ports")
+	}
+	return ports, nil
+}
+
+func truncateColumn(s string, width int) string {
+	if len(s) <= width {
+		return s
+	}
+	if width <= 3 {
+		return s[:width]
+	}
+	return s[:width-3] + "..."
 }
 
 // NewApp is intentionally cheap: it resolves paths and wires I/O streams,
@@ -46,10 +75,11 @@ func NewApp(in io.Reader, out, errOut io.Writer) (*App, error) {
 		return nil, err
 	}
 	app := &App{
-		paths:  paths,
-		in:     in,
-		out:    out,
-		errOut: errOut,
+		paths:         paths,
+		runtimeByName: RuntimeByName,
+		in:            in,
+		out:           out,
+		errOut:        errOut,
 	}
 	if file, ok := in.(*os.File); ok {
 		app.stdin = file
@@ -98,6 +128,17 @@ func (a *App) Prepare(ctx context.Context) error {
 }
 
 func (a *App) InitProject(ctx context.Context, name string, opts InitOptions) error {
+	ports, err := normalizePortOptions(opts.Ports)
+	if err != nil {
+		return err
+	}
+	var initialPorts []PortMapping
+	if ports.Specified && !ports.Clear && len(ports.Specs) > 0 {
+		initialPorts, err = ParsePortChange(ports.Specs, nil)
+		if err != nil {
+			return err
+		}
+	}
 	if err := ValidateProjectName(name, a.reserved); err != nil {
 		return err
 	}
@@ -120,19 +161,6 @@ func (a *App) InitProject(ctx context.Context, name string, opts InitOptions) er
 	if err != nil {
 		return err
 	}
-	nonEmpty, err := DirExistsNonEmpty(projectPath)
-	if err != nil {
-		return err
-	}
-	if nonEmpty && !opts.AssumeYes {
-		ok, err := a.confirm(fmt.Sprintf("Directory %s already exists and is not empty. Use it for this project?", projectPath))
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return errors.New("init canceled")
-		}
-	}
 	if err := os.MkdirAll(projectPath, 0o755); err != nil {
 		return fmt.Errorf("create project directory %s: %w", projectPath, err)
 	}
@@ -145,6 +173,7 @@ func (a *App) InitProject(ctx context.Context, name string, opts InitOptions) er
 	if err != nil {
 		return err
 	}
+	project.Ports = initialPorts
 
 	if err := ensureProjectControlPlane(a.paths, project); err != nil {
 		return err
@@ -159,19 +188,7 @@ func (a *App) InitProject(ctx context.Context, name string, opts InitOptions) er
 		createdVolumes = append(createdVolumes, volumeName)
 	}
 
-	if _, err := rt.Create(ctx, CreateSpec{
-		Name:          project.ContainerName,
-		Image:         project.Image,
-		ProjectName:   project.Name,
-		ProjectID:     project.ID,
-		ProjectPath:   project.Path,
-		Workdir:       a.config.Container.Workdir,
-		Env:           ProjectEnv(project, a.config),
-		Mounts:        a.projectMounts(project),
-		DockerEnabled: project.DockerEnabled,
-		Privileged:    a.config.Container.Privileged,
-		Network:       true,
-	}); err != nil {
+	if err := a.createProjectContainer(ctx, rt, project); err != nil {
 		a.cleanupVolumes(ctx, rt, createdVolumes)
 		return err
 	}
@@ -191,17 +208,49 @@ func (a *App) InitProject(ctx context.Context, name string, opts InitOptions) er
 	}
 
 	fmt.Fprintf(a.out, "Created project %s at %s using %s\n", project.Name, project.Path, project.Runtime)
+	if ports.List {
+		a.printProjectPorts(project)
+	}
 	if opts.Enter && a.isInteractive() {
-		return a.RunProject(ctx, project.Name, nil)
+		return a.RunProject(ctx, project.Name, nil, PortOptions{})
 	}
 	fmt.Fprintf(a.out, "Enter it with: ark %s\n", project.Name)
 	return nil
 }
 
-func (a *App) StartProject(ctx context.Context, name string, enter bool) error {
-	project, rt, err := a.projectRuntime(ctx, name)
+func (a *App) StartProject(ctx context.Context, name string, enter bool, ports PortOptions) error {
+	ports, err := normalizePortOptions(ports)
 	if err != nil {
 		return err
+	}
+	project, err := a.registry.Project(ctx, name)
+	if err != nil {
+		return err
+	}
+	if ports.List {
+		a.printProjectPorts(project)
+		return nil
+	}
+	var desired []PortMapping
+	if ports.Specified {
+		if !ports.Clear {
+			desired, err = ParsePortChange(ports.Specs, project.Ports)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	rt, err := a.runtimeForProject(ctx, project)
+	if err != nil {
+		return err
+	}
+	if ports.Specified {
+		if !PortMappingsEqual(project.Ports, desired) {
+			project, err = a.applyPortChange(ctx, rt, project, desired)
+			if err != nil {
+				return err
+			}
+		}
 	}
 	if err := a.warnProjectImageStale(ctx, project); err != nil {
 		return err
@@ -211,6 +260,9 @@ func (a *App) StartProject(ctx context.Context, name string, enter bool) error {
 	}
 	if err := a.touchProject(ctx, name); err != nil {
 		return err
+	}
+	if err := a.printDynamicPortsIfAny(ctx, rt, project); err != nil {
+		fmt.Fprintf(a.errOut, "ark: could not read live ports: %v\n", err)
 	}
 	if enter {
 		return a.execProject(ctx, rt, project, nil)
@@ -272,7 +324,7 @@ func (a *App) ListProjects(ctx context.Context) error {
 		fmt.Fprintln(a.out, "No ark projects yet.")
 		return nil
 	}
-	fmt.Fprintf(a.out, "%-18s %-8s %-12s %s\n", "NAME", "RUNTIME", "STATUS", "PATH")
+	fmt.Fprintf(a.out, "%-18s %-8s %-12s %-18s %s\n", "NAME", "RUNTIME", "STATUS", "PORTS", "PATH")
 	names := make([]string, 0, len(state.Projects))
 	for name := range state.Projects {
 		names = append(names, name)
@@ -281,20 +333,58 @@ func (a *App) ListProjects(ctx context.Context) error {
 	for _, name := range names {
 		project := state.Projects[name]
 		status := "unknown"
-		if rt, err := RuntimeByName(project.Runtime); err == nil {
+		runtimeByName := a.runtimeByName
+		if runtimeByName == nil {
+			runtimeByName = RuntimeByName
+		}
+		if rt, err := runtimeByName(project.Runtime); err == nil {
 			if container, err := rt.Inspect(ctx, project.ContainerName); err == nil {
 				status = container.Status
 			}
 		}
-		fmt.Fprintf(a.out, "%-18s %-8s %-12s %s\n", project.Name, project.Runtime, status, project.Path)
+		ports := FormatPortList(project.Ports)
+		if ports == "" {
+			ports = "—"
+		}
+		fmt.Fprintf(a.out, "%-18s %-8s %-12s %-18s %s\n", project.Name, project.Runtime, status, truncateColumn(ports, 18), project.Path)
 	}
 	return nil
 }
 
-func (a *App) RunProject(ctx context.Context, name string, cmd []string) error {
-	project, rt, err := a.projectRuntime(ctx, name)
+func (a *App) RunProject(ctx context.Context, name string, cmd []string, ports PortOptions) error {
+	ports, err := normalizePortOptions(ports)
 	if err != nil {
 		return err
+	}
+	project, err := a.registry.Project(ctx, name)
+	if err != nil {
+		return err
+	}
+	if ports.List {
+		a.printProjectPorts(project)
+		return nil
+	}
+	var desired []PortMapping
+	if ports.Specified && !ports.Clear {
+		desired, err = ParsePortChange(ports.Specs, project.Ports)
+		if err != nil {
+			return err
+		}
+	}
+	rt, err := a.runtimeForProject(ctx, project)
+	if err != nil {
+		return err
+	}
+	if ports.Specified {
+		if ports.Clear {
+			desired = nil
+		}
+		if !PortMappingsEqual(project.Ports, desired) {
+			project, err = a.applyPortChange(ctx, rt, project, desired)
+			if err != nil {
+				return err
+			}
+		}
 	}
 	if err := a.warnProjectImageStale(ctx, project); err != nil {
 		return err
@@ -305,10 +395,16 @@ func (a *App) RunProject(ctx context.Context, name string, cmd []string) error {
 	if err := a.touchProject(ctx, name); err != nil {
 		return err
 	}
+	if err := a.printDynamicPortsIfAny(ctx, rt, project); err != nil {
+		fmt.Fprintf(a.errOut, "ark: could not read live ports: %v\n", err)
+	}
+	if len(cmd) == 0 && !a.isInteractive() {
+		return nil
+	}
 	return a.execProject(ctx, rt, project, cmd)
 }
 
-func (a *App) RunDefault(ctx context.Context) error {
+func (a *App) RunDefault(ctx context.Context, ports PortOptions) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
@@ -318,12 +414,12 @@ func (a *App) RunDefault(ctx context.Context) error {
 		return err
 	}
 	if ok {
-		return a.RunProject(ctx, project.Name, nil)
+		return a.RunProject(ctx, project.Name, nil, ports)
 	}
 	fmt.Fprintln(a.out, "ark creates isolated development containers per project.")
 	fmt.Fprintln(a.out, "")
 	fmt.Fprintln(a.out, "Try:")
-	fmt.Fprintln(a.out, "  ark init app --runtime docker -y")
+	fmt.Fprintln(a.out, "  ark init app --runtime docker")
 	fmt.Fprintln(a.out, "  ark app echo hello")
 	fmt.Fprintln(a.out, "")
 	fmt.Fprintln(a.out, "If you are inside a registered project directory, plain `ark` enters it.")
@@ -335,14 +431,187 @@ func (a *App) projectRuntime(ctx context.Context, name string) (Project, Runtime
 	if err != nil {
 		return Project{}, nil, err
 	}
-	rt, err := RuntimeByName(project.Runtime)
+	rt, err := a.runtimeForProject(ctx, project)
 	if err != nil {
 		return Project{}, nil, err
 	}
-	if err := rt.Available(ctx); err != nil {
-		return Project{}, nil, err
-	}
 	return project, rt, nil
+}
+
+func (a *App) runtimeForProject(ctx context.Context, project Project) (Runtime, error) {
+	runtimeByName := a.runtimeByName
+	if runtimeByName == nil {
+		runtimeByName = RuntimeByName
+	}
+	rt, err := runtimeByName(project.Runtime)
+	if err != nil {
+		return nil, err
+	}
+	if err := rt.Available(ctx); err != nil {
+		return nil, err
+	}
+	return rt, nil
+}
+
+func (a *App) createProjectContainer(ctx context.Context, rt Runtime, project Project) error {
+	_, err := rt.Create(ctx, CreateSpec{
+		Name:          project.ContainerName,
+		Image:         project.Image,
+		ProjectName:   project.Name,
+		ProjectID:     project.ID,
+		ProjectPath:   project.Path,
+		Workdir:       a.config.Container.Workdir,
+		Env:           ProjectEnv(project, a.config),
+		Mounts:        a.projectMounts(project),
+		Ports:         project.Ports,
+		DockerEnabled: project.DockerEnabled,
+		Privileged:    a.config.Container.Privileged,
+		Network:       true,
+	})
+	return err
+}
+
+func (a *App) applyPortChange(ctx context.Context, rt Runtime, project Project, desired []PortMapping) (Project, error) {
+	container, err := rt.Inspect(ctx, project.ContainerName)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return project, err
+	}
+
+	if container != nil && container.Running {
+		if !project.AutoRecreateOnPortChange {
+			ok, err := a.confirm(fmt.Sprintf(
+				"%s is running. Changing ports requires recreating the container.\n"+
+					"Running processes in the container will be terminated. /work and home volumes are preserved.\n"+
+					"Continue? (this will be remembered for this project)",
+				project.Name,
+			))
+			if err != nil {
+				return project, err
+			}
+			if !ok {
+				return project, errors.New("port change canceled")
+			}
+			project.AutoRecreateOnPortChange = true
+		}
+		fmt.Fprintf(a.out, "Recreating %s for port change...\n", project.Name)
+		if err := rt.Stop(ctx, project.ContainerName, 10); err != nil && !errors.Is(err, ErrNotFound) {
+			return project, err
+		}
+		if err := rt.Remove(ctx, project.ContainerName, true); err != nil && !errors.Is(err, ErrNotFound) {
+			return project, err
+		}
+	} else if container != nil {
+		if err := rt.Remove(ctx, project.ContainerName, true); err != nil && !errors.Is(err, ErrNotFound) {
+			return project, err
+		}
+	}
+
+	project.Ports = desired
+
+	if err := a.createProjectContainer(ctx, rt, project); err != nil {
+		return project, err
+	}
+	if err := a.registry.Update(ctx, func(state *State) error {
+		if _, ok := state.Projects[project.Name]; !ok {
+			return fmt.Errorf("project %q: %w", project.Name, ErrNotFound)
+		}
+		state.Projects[project.Name] = project
+		return nil
+	}); err != nil {
+		return project, err
+	}
+	return project, nil
+}
+
+func (a *App) printProjectPorts(p Project) {
+	if len(p.Ports) == 0 {
+		fmt.Fprintf(a.out, "%s has no ports configured.\n", p.Name)
+		return
+	}
+	fmt.Fprintf(a.out, "%s ports:\n", p.Name)
+	for _, port := range p.Ports {
+		fmt.Fprintf(a.out, "  %s\n", FormatPortMapping(port))
+	}
+}
+
+func (a *App) printDynamicPortsIfAny(ctx context.Context, rt Runtime, p Project) error {
+	hasDynamic := false
+	for _, port := range p.Ports {
+		if port.HostPort == "0" {
+			hasDynamic = true
+			break
+		}
+	}
+	if !hasDynamic {
+		return nil
+	}
+	container, err := rt.Inspect(ctx, p.ContainerName)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(a.out, "Forwarded:")
+	for _, port := range container.Ports {
+		fmt.Fprintf(a.out, "  %s\n", FormatPortMapping(port))
+	}
+	return nil
+}
+
+func (a *App) printProjectHelp(ctx context.Context, name string) error {
+	project, err := a.registry.Project(ctx, name)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			fmt.Fprintf(a.out, "ark %s \u2014 project %q is not registered.\n\n", name, name)
+			fmt.Fprintln(a.out, "Create it with:")
+			fmt.Fprintf(a.out, "  ark init %s\n", name)
+			return nil
+		}
+		return err
+	}
+
+	ports := FormatPortList(project.Ports)
+	if ports == "" {
+		ports = "\u2014"
+	}
+	fmt.Fprintf(a.out, "ark %s \u2014 enter or run in project %q\n\n", name, name)
+	fmt.Fprintln(a.out, "CURRENT")
+	fmt.Fprintf(a.out, "  Status:    %s\n", a.projectHelpStatus(ctx, project))
+	fmt.Fprintf(a.out, "  Path:      %s\n", project.Path)
+	fmt.Fprintf(a.out, "  Ports:     %s\n\n", ports)
+	fmt.Fprintln(a.out, "USAGE")
+	fmt.Fprintf(a.out, "  ark %s                    enter the project shell\n", name)
+	fmt.Fprintf(a.out, "  ark %s <cmd...>           run a command in the project\n", name)
+	fmt.Fprintf(a.out, "  ark %s --port 3000        add a port\n", name)
+	fmt.Fprintf(a.out, "  ark %s --port -3000       remove a port\n", name)
+	fmt.Fprintf(a.out, "  ark %s --port =3000       replace all ports\n", name)
+	fmt.Fprintf(a.out, "  ark %s --ports            show this project's ports\n", name)
+	fmt.Fprintf(a.out, "  ark %s --no-ports         clear all ports\n\n", name)
+	fmt.Fprintln(a.out, "See \"ark --help\" for project management commands.")
+	return nil
+}
+
+func (a *App) projectHelpStatus(ctx context.Context, project Project) string {
+	runtimeByName := a.runtimeByName
+	if runtimeByName == nil {
+		runtimeByName = RuntimeByName
+	}
+	rt, err := runtimeByName(project.Runtime)
+	if err != nil {
+		return "not found"
+	}
+	if err := rt.Available(ctx); err != nil {
+		return "not found"
+	}
+	container, err := rt.Inspect(ctx, project.ContainerName)
+	if errors.Is(err, ErrNotFound) {
+		return "not found"
+	}
+	if err != nil {
+		return "not found"
+	}
+	if container.Running {
+		return "running"
+	}
+	return "stopped"
 }
 
 func (a *App) ensureStarted(ctx context.Context, rt Runtime, project Project) error {
