@@ -93,11 +93,11 @@ func TestEnsureUpdateTargetWritableAcceptsWritableDir(t *testing.T) {
 
 func TestPackageManagerHint(t *testing.T) {
 	cases := map[string]string{
-		"/opt/homebrew/bin/ark":              "brew upgrade ark",
+		"/opt/homebrew/bin/ark":               "brew upgrade ark",
 		"/usr/local/Cellar/ark/0.1.0/bin/ark": "brew upgrade ark",
-		"/opt/local/bin/ark":                 "sudo port upgrade ark",
-		"/usr/bin/ark":                       "apt upgrade ark",
-		"/home/user/.ark/bin/ark":            "",
+		"/opt/local/bin/ark":                  "sudo port upgrade ark",
+		"/usr/bin/ark":                        "apt upgrade ark",
+		"/home/user/.ark/bin/ark":             "",
 	}
 	for path, want := range cases {
 		got := packageManagerHint(path)
