@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -97,7 +98,7 @@ func (a *App) rootCommand(ctx context.Context) *cobra.Command {
 		&cobra.Group{ID: "projects", Title: "PROJECTS"},
 		&cobra.Group{ID: "ark", Title: "ARK"},
 	)
-	root.SetHelpTemplate(helpTemplate)
+	root.SetHelpFunc(a.helpFunc)
 	root.Flags().BoolVarP(&printVersion, "version", "v", false, "print version and build number")
 	addPortFlags(root, &ports)
 
@@ -245,7 +246,7 @@ func (a *App) configCommand() *cobra.Command {
 	}
 	cmd.AddCommand(&cobra.Command{
 		Use:   "path",
-		Short: "Print config file path",
+		Short: "print config file path",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(a.out, a.paths.ConfigFile)
@@ -255,7 +256,7 @@ func (a *App) configCommand() *cobra.Command {
 	var force bool
 	initCmd := &cobra.Command{
 		Use:   "init",
-		Short: "Create a sample config file",
+		Short: "create a sample config file",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if err := WriteDefaultConfig(a.paths, force); err != nil {
@@ -282,29 +283,150 @@ func (a *App) doctorCommand() *cobra.Command {
 	}
 }
 
-const helpTemplate = `{{if .Long}}{{.Long}}{{else}}{{.Short}}{{end}}
+type helpStyle struct {
+	color bool
+}
 
-USAGE
-  ark <name> [args...]          enter or run in a project
-  ark <command> [args...]       manage projects and ark itself
+func (s helpStyle) heading(text string) string {
+	if !s.color {
+		return text
+	}
+	return "\x1b[1;36m" + text + "\x1b[0m"
+}
 
-{{- range .Groups}}
-{{$group := .}}
-{{.Title}}{{range $.Commands}}{{if and (eq .GroupID $group.ID) (not .Hidden)}}
-  {{rpad .Name 12}}{{.Short}}{{end}}{{end}}
-{{- end}}
+func (s helpStyle) command(text string) string {
+	if !s.color {
+		return text
+	}
+	return "\x1b[1;32m" + text + "\x1b[0m"
+}
 
-INSIDE A PROJECT
-  <name>                       enter the project shell
-  <name> <cmd...>              run a command in the project
-  <name> --port 3000           add a port (sticky across stop/start)
-  <name> --port -3000          remove a port
-  <name> --port =3000,8080:80  replace all ports
-  <name> --ports               show this project's ports
-  <name> --no-ports            clear all ports
+func (a *App) helpFunc(cmd *cobra.Command, _ []string) {
+	style := helpStyle{color: a.helpColorEnabled()}
+	out := cmd.OutOrStdout()
+	if cmd.Root() == cmd {
+		printRootHelp(out, cmd, style)
+		return
+	}
+	printCommandHelp(out, cmd, style)
+}
 
-"ark <command> --help" for details on any command.
-`
+func (a *App) helpColorEnabled() bool {
+	if !a.isInteractive() {
+		return false
+	}
+	if os.Getenv("NO_COLOR") != "" || os.Getenv("TERM") == "dumb" {
+		return false
+	}
+	return true
+}
+
+func printRootHelp(out io.Writer, root *cobra.Command, style helpStyle) {
+	fmt.Fprintf(out, "%s\n\n", commandSummary(root))
+	fmt.Fprintf(out, "%s\n", style.heading("USAGE"))
+	fmt.Fprintln(out, "  ark <name> [args...]          enter or run in a project")
+	fmt.Fprintln(out, "  ark <command> [args...]       manage projects and ark itself")
+
+	for _, group := range root.Groups() {
+		fmt.Fprintf(out, "\n%s\n", style.heading(group.Title))
+		for _, cmd := range root.Commands() {
+			if cmd.GroupID != group.ID || !cmd.IsAvailableCommand() {
+				continue
+			}
+			fmt.Fprintf(out, "  %s%s\n", style.command(padRight(cmd.Name(), 12)), cmd.Short)
+			for _, sub := range visibleSubcommands(cmd) {
+				fmt.Fprintf(out, "    %s%s\n", style.command(padRight(sub.Name(), 10)), sub.Short)
+			}
+		}
+	}
+
+	fmt.Fprintf(out, "\n%s\n", style.heading("INSIDE A PROJECT"))
+	fmt.Fprintln(out, "  <name>                       enter the project shell")
+	fmt.Fprintln(out, "  <name> <cmd...>              run a command in the project")
+	fmt.Fprintln(out, "  <name> --port 3000           add a port (sticky across stop/start)")
+	fmt.Fprintln(out, "  <name> --port -3000          remove a port")
+	fmt.Fprintln(out, "  <name> --port =3000,8080:80  replace all ports")
+	fmt.Fprintln(out, "  <name> --ports               show this project's ports")
+	fmt.Fprintln(out, "  <name> --no-ports            clear all ports")
+	fmt.Fprintln(out, "")
+	fmt.Fprintln(out, `"ark <command> --help" for details on any command.`)
+}
+
+func printCommandHelp(out io.Writer, cmd *cobra.Command, style helpStyle) {
+	fmt.Fprintf(out, "%s\n\n", commandSummary(cmd))
+	fmt.Fprintf(out, "%s\n", style.heading("USAGE"))
+	if cmd.HasAvailableSubCommands() {
+		if cmd.Runnable() {
+			fmt.Fprintf(out, "  %s [command]\n", cmd.CommandPath())
+		} else {
+			fmt.Fprintf(out, "  %s <command>\n", cmd.CommandPath())
+		}
+	} else {
+		fmt.Fprintf(out, "  %s\n", cmd.UseLine())
+	}
+
+	if subcommands := visibleSubcommands(cmd); len(subcommands) > 0 {
+		fmt.Fprintf(out, "\n%s\n", style.heading("COMMANDS"))
+		width := commandNameWidth(subcommands)
+		for _, sub := range subcommands {
+			fmt.Fprintf(out, "  %s%s\n", style.command(padRight(sub.Name(), width)), sub.Short)
+		}
+
+		fmt.Fprintf(out, "\n%s\n", style.heading("EXAMPLES"))
+		for _, sub := range subcommands {
+			fmt.Fprintf(out, "  %s %s\n", cmd.CommandPath(), sub.Name())
+		}
+	}
+
+	printFlagHelp(out, cmd, style)
+
+	if cmd.HasAvailableSubCommands() {
+		fmt.Fprintf(out, "\n%q for details on a subcommand.\n", cmd.CommandPath()+" <command> --help")
+	}
+}
+
+func printFlagHelp(out io.Writer, cmd *cobra.Command, style helpStyle) {
+	if cmd.HasAvailableLocalFlags() {
+		fmt.Fprintf(out, "\n%s\n%s\n", style.heading("FLAGS"), strings.TrimRight(cmd.LocalFlags().FlagUsages(), "\n"))
+	}
+	if cmd.HasAvailableInheritedFlags() {
+		fmt.Fprintf(out, "\n%s\n%s\n", style.heading("GLOBAL FLAGS"), strings.TrimRight(cmd.InheritedFlags().FlagUsages(), "\n"))
+	}
+}
+
+func commandSummary(cmd *cobra.Command) string {
+	if cmd.Long != "" {
+		return cmd.Long
+	}
+	return cmd.Short
+}
+
+func visibleSubcommands(cmd *cobra.Command) []*cobra.Command {
+	subcommands := []*cobra.Command{}
+	for _, sub := range cmd.Commands() {
+		if sub.IsAvailableCommand() {
+			subcommands = append(subcommands, sub)
+		}
+	}
+	return subcommands
+}
+
+func commandNameWidth(commands []*cobra.Command) int {
+	width := 12
+	for _, cmd := range commands {
+		if len(cmd.Name())+2 > width {
+			width = len(cmd.Name()) + 2
+		}
+	}
+	return width
+}
+
+func padRight(s string, width int) string {
+	if len(s) >= width {
+		return s
+	}
+	return s + strings.Repeat(" ", width-len(s))
+}
 
 func (a *App) shouldRunProject(args []string) bool {
 	if len(args) == 0 {

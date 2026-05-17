@@ -26,6 +26,12 @@ func TestRootHelpShowsCommandGroups(t *testing.T) {
 		"ARK",
 		"INSIDE A PROJECT",
 		"init        create a project",
+		"rebuild     recreate from the current base image",
+		"config      show or edit ark config",
+		"  path      print config file path",
+		"image       manage the base image",
+		"  status    show base image status",
+		"  rebuild   rebuild the reusable base image",
 		"doctor      check local setup",
 	} {
 		if !strings.Contains(got, want) {
@@ -34,6 +40,40 @@ func TestRootHelpShowsCommandGroups(t *testing.T) {
 	}
 	if strings.Contains(got, "temp") {
 		t.Fatalf("hidden temp command appeared in help:\n%s", got)
+	}
+}
+
+func TestImageHelpShowsImageSubcommands(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	app := &App{out: &out, errOut: &errOut}
+	cmd := app.rootCommand(context.Background())
+	cmd.SetArgs([]string{"image", "--help"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+
+	got := out.String()
+	for _, want := range []string{
+		"manage the base image",
+		"USAGE",
+		"ark image <command>",
+		"COMMANDS",
+		"status      show base image status",
+		"rebuild     rebuild the reusable base image",
+		"EXAMPLES",
+		"ark image status",
+		"ark image rebuild",
+		"FLAGS",
+		"--runtime",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("image help missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "INSIDE A PROJECT") {
+		t.Fatalf("image help should not show project help:\n%s", got)
 	}
 }
 

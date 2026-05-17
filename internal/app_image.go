@@ -28,7 +28,7 @@ func (a *App) imageCommand() *cobra.Command {
 	cmd.PersistentFlags().StringVar(&runtimeName, "runtime", a.config.Runtime, "runtime: auto, apple, or docker")
 	cmd.AddCommand(&cobra.Command{
 		Use:   "status",
-		Short: "Show Ark base image status",
+		Short: "show base image status",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.ImageStatus(cmd.Context(), runtimeName)
@@ -36,7 +36,7 @@ func (a *App) imageCommand() *cobra.Command {
 	})
 	cmd.AddCommand(&cobra.Command{
 		Use:   "rebuild",
-		Short: "Rebuild the reusable Ark base image",
+		Short: "rebuild the reusable base image",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return a.ImageRebuild(cmd.Context(), runtimeName)
