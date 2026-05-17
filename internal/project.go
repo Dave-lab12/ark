@@ -14,31 +14,18 @@ import (
 
 var projectNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,62}$`)
 
-var reservedProjectNames = map[string]struct{}{
-	"config":     {},
-	"completion": {},
-	"doctor":     {},
-	"help":       {},
-	"image":      {},
-	"init":       {},
-	"ls":         {},
-	"rebuild":    {},
-	"rm":         {},
-	"start":      {},
-	"stop":       {},
-	"temp":       {},
-	"update":     {},
-	"version":    {},
-}
-
-func ValidateProjectName(name string) error {
+// ValidateProjectName rejects names that don't fit our character set or that
+// would collide with an ark subcommand. `reserved` is supplied by the caller
+// (built from the cobra command tree) so this stays a pure function and the
+// list can't drift from the real commands.
+func ValidateProjectName(name string, reserved map[string]struct{}) error {
 	if !projectNamePattern.MatchString(name) {
 		return fmt.Errorf("invalid project name %q: use letters, numbers, dots, dashes, or underscores", name)
 	}
 	if name == "." || name == ".." || strings.Contains(name, string(filepath.Separator)) {
 		return fmt.Errorf("invalid project name %q", name)
 	}
-	if _, reserved := reservedProjectNames[name]; reserved {
+	if _, isReserved := reserved[name]; isReserved {
 		return fmt.Errorf("project name %q is reserved by an ark command", name)
 	}
 	return nil
@@ -143,10 +130,6 @@ func projectVolumeNames(project Project) []string {
 		names = append(names, project.Volumes.Docker)
 	}
 	return names
-}
-
-func projectCreateVolumeNames(project Project) []string {
-	return projectVolumeNames(project)
 }
 
 func ProjectEnv(project Project, config Config) []string {

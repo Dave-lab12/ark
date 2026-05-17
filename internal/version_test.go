@@ -64,12 +64,15 @@ func TestVersionCommand(t *testing.T) {
 }
 
 func TestVersionArgsStayOnRootCommand(t *testing.T) {
+	app := &App{}
+	root := app.rootCommand(context.Background())
+	app.reserved = collectReservedNames(root)
 	for _, args := range [][]string{
 		{"-v"},
 		{"--version"},
 		{"version"},
 	} {
-		if shouldRunProject(args) {
+		if app.shouldRunProject(args) {
 			t.Fatalf("shouldRunProject(%v) = true, want false", args)
 		}
 	}

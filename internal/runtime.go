@@ -3,7 +3,6 @@ package internal
 import (
 	"context"
 	"fmt"
-	"runtime"
 )
 
 type Runtime interface {
@@ -56,9 +55,6 @@ func RuntimeByName(name string) (Runtime, error) {
 func resolveAutoRuntime(ctx context.Context) (Runtime, string, error) {
 	// The Apple backend is intentionally a stub in this MVP. Keep auto on Docker
 	// until the Apple runtime is implemented so `ark init` remains usable.
-	if runtime.GOOS == "darwin" && runtime.GOARCH == "arm64" {
-		_ = NewAppleRuntime().Available(ctx)
-	}
 	rt, err := NewDockerRuntime()
 	if err != nil {
 		return nil, "", err

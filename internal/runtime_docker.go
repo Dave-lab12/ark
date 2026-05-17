@@ -1,7 +1,6 @@
 package internal
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -138,20 +137,35 @@ func (r *DockerRuntime) Create(ctx context.Context, spec CreateSpec) (string, er
 		Mounts:      mounts,
 		NetworkMode: networkMode,
 		Privileged:  spec.Privileged,
+		// Linux Engine doesn't map host.docker.internal by default; this makes
+		// it resolve to the host so the Git broker's TCP fallback works there.
+		// No-op on Docker Desktop where the mapping already exists.
+		ExtraHosts: []string{"host.docker.internal:host-gateway"},
 	}
 
 	resp, err := r.client.ContainerCreate(ctx, config, hostConfig, &network.NetworkingConfig{}, nil, spec.Name)
 	if err != nil {
-		return "", fmt.Errorf("create container %s: %w", spec.Name, err)
+		// Older Docker API versions reject the "host-gateway" magic string.
+		// Retry once without it and warn — the container still works; only
+		// the TCP fallback for the Git broker is at risk.
+		if strings.Contains(err.Error(), "host-gateway") {
+			fmt.Fprintln(os.Stderr, "ark: Docker API does not support host-gateway; Git broker TCP fallback may not reach the host")
+			hostConfig.ExtraHosts = nil
+			resp, err = r.client.ContainerCreate(ctx, config, hostConfig, &network.NetworkingConfig{}, nil, spec.Name)
+		}
+		if err != nil {
+			return "", fmt.Errorf("create container %s: %w", spec.Name, err)
+		}
 	}
 	return resp.ID, nil
 }
 
 func (r *DockerRuntime) Start(ctx context.Context, containerName string) error {
+	inspect, err := r.client.ContainerInspect(ctx, containerName)
+	if err == nil && inspect.State != nil && inspect.State.Running {
+		return nil
+	}
 	if err := r.client.ContainerStart(ctx, containerName, types.ContainerStartOptions{}); err != nil {
-		if strings.Contains(err.Error(), "already started") {
-			return nil
-		}
 		return fmt.Errorf("start container %s: %w", containerName, err)
 	}
 	return nil
@@ -333,17 +347,18 @@ func (r *DockerRuntime) RemoveVolume(ctx context.Context, name string) error {
 }
 
 func streamDockerBuild(r io.Reader, out io.Writer) error {
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		line := scanner.Bytes()
+	dec := json.NewDecoder(r)
+	for {
 		var msg struct {
 			Stream string `json:"stream"`
 			Status string `json:"status"`
 			Error  string `json:"error"`
 		}
-		if err := json.Unmarshal(line, &msg); err != nil {
-			fmt.Fprintln(out, string(line))
-			continue
+		if err := dec.Decode(&msg); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return fmt.Errorf("decode build output: %w", err)
 		}
 		switch {
 		case msg.Error != "":
@@ -354,7 +369,6 @@ func streamDockerBuild(r io.Reader, out io.Writer) error {
 			fmt.Fprintln(out, msg.Status)
 		}
 	}
-	return scanner.Err()
 }
 
 func prepareTerminal(spec ExecSpec) (func(), error) {

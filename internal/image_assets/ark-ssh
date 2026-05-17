@@ -6,10 +6,14 @@ set -euo pipefail
 # Ark broker over a Unix socket (or TCP loopback as a Docker Desktop fallback).
 #
 # Wire protocol on the socket:
-#   header line: "ARKGIT1 <base64(json-request)>\n"
+#   header line: "ARKGIT1 <base64(json-request)>\n"            (unix-only)
+#              | "ARKGIT1 <token> <base64(json-request)>\n"    (any transport)
 #   then raw stdin (the pack/protocol bytes) is streamed through.
 # The broker replies with raw bytes on the same connection, which become
 # this script's stdout — i.e. Git's view of the remote.
+#
+# The token form is required on the TCP fallback so that other host-side
+# processes running as the same user cannot impersonate the container.
 # -----------------------------------------------------------------------------
 
 sock="${ARK_GIT_BROKER_SOCK:-/run/ark/git-broker.sock}"
@@ -46,7 +50,13 @@ request="$(
 )"
 
 send_request() {
-    printf 'ARKGIT1 %s\n' "$(printf '%s' "${request}" | base64 | tr -d '\n')"
+    local payload
+    payload="$(printf '%s' "${request}" | base64 | tr -d '\n')"
+    if [[ -n "${ARK_GIT_BROKER_TOKEN:-}" ]]; then
+        printf 'ARKGIT1 %s %s\n' "${ARK_GIT_BROKER_TOKEN}" "${payload}"
+    else
+        printf 'ARKGIT1 %s\n' "${payload}"
+    fi
     # Stream Git's stdin (pack data, protocol bytes) on to the broker.
     cat
 }

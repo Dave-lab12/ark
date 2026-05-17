@@ -3,6 +3,8 @@ package internal
 import (
 	"bufio"
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -16,7 +18,19 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 )
+
+const brokerDefaultOpTimeout = 5 * time.Minute
+
+// Swappable so tests can shorten the deadline without waiting 10s.
+var brokerHeaderReadTimeout = 10 * time.Second
+
+func brokerHeaderReadTimeoutForTest(d time.Duration) time.Duration {
+	prev := brokerHeaderReadTimeout
+	brokerHeaderReadTimeout = d
+	return prev
+}
 
 const DefaultBrokerSocketPath = "/run/ark/git-broker.sock"
 
@@ -53,8 +67,10 @@ type GitBroker struct {
 	socketPath string
 	listeners  []net.Listener
 	tcpAddress string
+	token      string
 	hosts      map[string]struct{}
 	errOut     io.Writer
+	opTimeout  time.Duration
 	wg         sync.WaitGroup
 }
 
@@ -84,18 +100,46 @@ func StartGitBroker(ctx context.Context, socketPath string, allowedHosts []strin
 	for _, host := range allowedHosts {
 		hosts[strings.ToLower(strings.TrimSpace(host))] = struct{}{}
 	}
+	token, err := generateBrokerToken()
+	if err != nil {
+		_ = unixListener.Close()
+		_ = tcpListener.Close()
+		return nil, fmt.Errorf("generate Git broker token: %w", err)
+	}
 	broker := &GitBroker{
 		socketPath: socketPath,
 		listeners:  []net.Listener{unixListener, tcpListener},
 		tcpAddress: fmt.Sprintf("host.docker.internal:%d", tcpAddr.Port),
+		token:      token,
 		hosts:      hosts,
 		errOut:     errOut,
+		opTimeout:  resolveBrokerOpTimeout(),
 	}
-	for _, listener := range broker.listeners {
-		broker.wg.Add(1)
-		go broker.serve(ctx, listener)
-	}
+	broker.wg.Add(1)
+	go broker.serve(ctx, unixListener, false)
+	broker.wg.Add(1)
+	go broker.serve(ctx, tcpListener, true)
 	return broker, nil
+}
+
+func generateBrokerToken() (string, error) {
+	var buf [32]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(buf[:]), nil
+}
+
+func resolveBrokerOpTimeout() time.Duration {
+	raw := strings.TrimSpace(os.Getenv("ARK_GIT_BROKER_OP_TIMEOUT"))
+	if raw == "" {
+		return brokerDefaultOpTimeout
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil || d <= 0 {
+		return brokerDefaultOpTimeout
+	}
+	return d
 }
 
 func (b *GitBroker) Close() error {
@@ -117,17 +161,14 @@ func (b *GitBroker) Environment() []string {
 	if b == nil || b.tcpAddress == "" {
 		return nil
 	}
-	return []string{"ARK_GIT_BROKER_TCP=" + b.tcpAddress}
-}
-
-func GitBrokerEnvironment() []string {
-	return []string{
-		"GIT_SSH_COMMAND=/usr/local/bin/ark-ssh",
-		"ARK_GIT_BROKER_SOCK=" + DefaultBrokerSocketPath,
+	env := []string{"ARK_GIT_BROKER_TCP=" + b.tcpAddress}
+	if b.token != "" {
+		env = append(env, "ARK_GIT_BROKER_TOKEN="+b.token)
 	}
+	return env
 }
 
-func (b *GitBroker) serve(ctx context.Context, listener net.Listener) {
+func (b *GitBroker) serve(ctx context.Context, listener net.Listener, requireToken bool) {
 	defer b.wg.Done()
 	for {
 		conn, err := listener.Accept()
@@ -141,19 +182,27 @@ func (b *GitBroker) serve(ctx context.Context, listener net.Listener) {
 		b.wg.Add(1)
 		go func() {
 			defer b.wg.Done()
-			b.handle(ctx, conn)
+			b.handle(ctx, conn, requireToken)
 		}()
 	}
 }
 
-func (b *GitBroker) handle(ctx context.Context, conn net.Conn) {
+func (b *GitBroker) handle(ctx context.Context, conn net.Conn, requireToken bool) {
 	defer conn.Close()
+	// Cap how long a misbehaving client can pin a goroutine + ssh process by
+	// holding the connection open without sending a header.
+	_ = conn.SetReadDeadline(time.Now().Add(brokerHeaderReadTimeout))
 	reader := bufio.NewReader(conn)
-	request, err := readBrokerRequest(reader)
+	request, err := readBrokerRequest(reader, b.token, requireToken)
 	if err != nil {
 		fmt.Fprintf(b.errOut, "ark git broker: %v\n", err)
 		return
 	}
+	// Clear the deadline now — the git pack/protocol stream that follows can
+	// legitimately take minutes (large fetches), and we don't want the header
+	// timeout to kill it mid-transfer.
+	_ = conn.SetReadDeadline(time.Time{})
+
 	sshReq, err := parseGitSSHRequest(request.Argv)
 	if err != nil {
 		fmt.Fprintf(b.errOut, "ark git broker: %v\n", err)
@@ -177,10 +226,20 @@ func (b *GitBroker) handle(ctx context.Context, conn net.Conn) {
 	}
 	args = append(args, target, sshReq.Command)
 
-	cmd := exec.CommandContext(ctx, "ssh", args...)
+	opTimeout := b.opTimeout
+	if opTimeout <= 0 {
+		opTimeout = brokerDefaultOpTimeout
+	}
+	opCtx, cancel := context.WithTimeout(ctx, opTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(opCtx, "ssh", args...)
 	cmd.Stdin = reader
 	cmd.Stdout = conn
-	cmd.Stderr = b.errOut
+	// ssh's stderr (auth failures, host key prompts, "Permission denied")
+	// goes back to the client so git surfaces it to the user. Broker-internal
+	// errors above still go to b.errOut on the ark side.
+	cmd.Stderr = conn
 	cmd.Env = os.Environ()
 	if request.Env["GIT_PROTOCOL"] != "" {
 		cmd.Env = append(cmd.Env, "GIT_PROTOCOL="+request.Env["GIT_PROTOCOL"])
@@ -190,7 +249,7 @@ func (b *GitBroker) handle(ctx context.Context, conn net.Conn) {
 	}
 }
 
-func readBrokerRequest(reader *bufio.Reader) (GitBrokerRequest, error) {
+func readBrokerRequest(reader *bufio.Reader, expectedToken string, requireToken bool) (GitBrokerRequest, error) {
 	line, err := reader.ReadString('\n')
 	if err != nil {
 		return GitBrokerRequest{}, fmt.Errorf("read request header: %w", err)
@@ -200,7 +259,31 @@ func readBrokerRequest(reader *bufio.Reader) (GitBrokerRequest, error) {
 	if !strings.HasPrefix(line, prefix) {
 		return GitBrokerRequest{}, errors.New("invalid request header")
 	}
-	data, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(line, prefix))
+	rest := strings.TrimPrefix(line, prefix)
+
+	// Wire formats:
+	//   "ARKGIT1 <base64-json>"          — legacy, allowed only on unix socket
+	//   "ARKGIT1 <token> <base64-json>"  — authenticated, required on TCP
+	var token, payload string
+	if idx := strings.IndexByte(rest, ' '); idx != -1 {
+		token = rest[:idx]
+		payload = rest[idx+1:]
+	} else {
+		payload = rest
+	}
+
+	if token != "" {
+		if expectedToken == "" {
+			return GitBrokerRequest{}, errors.New("broker has no token configured")
+		}
+		if subtle.ConstantTimeCompare([]byte(token), []byte(expectedToken)) != 1 {
+			return GitBrokerRequest{}, errors.New("invalid broker token")
+		}
+	} else if requireToken {
+		return GitBrokerRequest{}, errors.New("missing broker token")
+	}
+
+	data, err := base64.StdEncoding.DecodeString(payload)
 	if err != nil {
 		return GitBrokerRequest{}, fmt.Errorf("decode request header: %w", err)
 	}

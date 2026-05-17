@@ -103,7 +103,7 @@ func (a *App) RebuildProject(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
-	if err := a.prepareProjectMounts(project); err != nil {
+	if err := ensureProjectControlPlane(a.paths, project); err != nil {
 		return err
 	}
 	imageInfo, err := a.ensureBaseImage(ctx, rt, project.Runtime)
@@ -116,7 +116,7 @@ func (a *App) RebuildProject(ctx context.Context, name string) error {
 	if err := rt.Remove(ctx, project.ContainerName, true); err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
-	for _, volumeName := range projectCreateVolumeNames(project) {
+	for _, volumeName := range projectVolumeNames(project) {
 		if err := rt.CreateVolume(ctx, volumeName); err != nil {
 			return err
 		}
@@ -266,10 +266,6 @@ func (a *App) warnProjectImageStale(ctx context.Context, project Project) error 
 	}
 	fmt.Fprintf(a.errOut, "Project %s was created with an older Ark base image.\nRun: ark rebuild %s\n", project.Name, project.Name)
 	return nil
-}
-
-func (a *App) prepareProjectMounts(project Project) error {
-	return ensureProjectControlPlane(a.paths, project)
 }
 
 func (a *App) projectMounts(project Project) []MountSpec {

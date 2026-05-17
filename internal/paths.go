@@ -84,9 +84,8 @@ func (p Paths) ProjectSocketDir(project Project) string {
 }
 
 func (p Paths) ProjectPath(name string) (string, error) {
-	if err := ValidateProjectName(name); err != nil {
-		return "", err
-	}
+	// Callers are responsible for ValidateProjectName; the path-escape check
+	// below still catches anything dangerous regardless.
 	root, err := filepath.Abs(p.ProjectRoot)
 	if err != nil {
 		return "", fmt.Errorf("resolve project root: %w", err)

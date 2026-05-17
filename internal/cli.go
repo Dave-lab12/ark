@@ -33,12 +33,30 @@ func (a *App) Execute(ctx context.Context, args []string) error {
 	if err := a.Prepare(ctx); err != nil {
 		return err
 	}
-	if shouldRunProject(args) {
+	// Build the command tree before routing so the reserved-name set is
+	// derived from the real cobra commands rather than a parallel list that
+	// can drift when subcommands are added.
+	root := a.rootCommand(ctx)
+	a.reserved = collectReservedNames(root)
+	if a.shouldRunProject(args) {
 		return a.RunProject(ctx, args[0], args[1:])
 	}
-	root := a.rootCommand(ctx)
 	root.SetArgs(args)
 	return root.ExecuteContext(ctx)
+}
+
+// collectReservedNames walks the cobra command tree and returns the set of
+// names and aliases that ark uses as subcommands. Any of these would shadow
+// a project name on the command line.
+func collectReservedNames(root *cobra.Command) map[string]struct{} {
+	reserved := map[string]struct{}{}
+	for _, cmd := range root.Commands() {
+		reserved[cmd.Name()] = struct{}{}
+		for _, alias := range cmd.Aliases {
+			reserved[alias] = struct{}{}
+		}
+	}
+	return reserved
 }
 
 func (a *App) rootCommand(ctx context.Context) *cobra.Command {
@@ -223,16 +241,14 @@ func (a *App) doctorCommand() *cobra.Command {
 	}
 }
 
-func isKnownCommand(arg string) bool {
-	_, ok := reservedProjectNames[arg]
-	return ok
-}
-
-func shouldRunProject(args []string) bool {
+func (a *App) shouldRunProject(args []string) bool {
 	if len(args) == 0 {
 		return false
 	}
-	if isKnownCommand(args[0]) || isHelpArg(args[0]) || isVersionArg(args[0]) {
+	if _, reserved := a.reserved[args[0]]; reserved {
+		return false
+	}
+	if isHelpArg(args[0]) || isVersionArg(args[0]) {
 		return false
 	}
 	return true

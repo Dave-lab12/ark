@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"path"
@@ -43,6 +44,16 @@ func (a *App) updateCommand() *cobra.Command {
 }
 
 func (a *App) Update(ctx context.Context, force bool) error {
+	target, err := resolveUpdateTarget(a.paths.ArkHome)
+	if err != nil {
+		return err
+	}
+	// Bail early if we can't write where the running binary lives. Avoids
+	// downloading a release tarball just to fail at install time.
+	if err := ensureUpdateTargetWritable(target); err != nil {
+		return err
+	}
+
 	client := &http.Client{Timeout: 5 * time.Minute}
 	release, err := latestGitHubRelease(ctx, client, defaultUpdateRepository)
 	if err != nil {
@@ -68,12 +79,72 @@ func (a *App) Update(ctx context.Context, force bool) error {
 		return err
 	}
 
-	target := filepath.Join(a.paths.ArkHome, "bin", "ark")
 	if err := installArkBinary(target, binary, perm); err != nil {
 		return err
 	}
 	fmt.Fprintf(a.out, "Installed Ark %s to %s\n", version, target)
 	return nil
+}
+
+// resolveUpdateTarget returns the on-disk path of the running ark binary,
+// following symlinks. If we can't determine it (e.g. /proc unavailable on
+// the host), fall back to the ark-managed install path.
+func resolveUpdateTarget(arkHome string) (string, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return filepath.Join(arkHome, "bin", "ark"), nil
+	}
+	resolved, err := filepath.EvalSymlinks(exe)
+	if err != nil {
+		// A dangling symlink is unusual but not fatal — use the raw path.
+		return exe, nil
+	}
+	return resolved, nil
+}
+
+// ensureUpdateTargetWritable verifies we can replace the file at target.
+// We test by trying to create a temp file in the parent directory, since
+// rename-over-busy is what installArkBinary ultimately does. A permission
+// error here almost always means the binary was installed by a package
+// manager, so we surface a clearer message than the raw EACCES.
+func ensureUpdateTargetWritable(target string) error {
+	dir := filepath.Dir(target)
+	probe, err := os.CreateTemp(dir, ".ark-write-probe-*")
+	if err != nil {
+		if errors.Is(err, fs.ErrPermission) {
+			return notWritableError(target)
+		}
+		return fmt.Errorf("check %s for writability: %w", dir, err)
+	}
+	name := probe.Name()
+	_ = probe.Close()
+	_ = os.Remove(name)
+	return nil
+}
+
+func notWritableError(target string) error {
+	msg := fmt.Sprintf("ark update cannot write to %s: this binary appears to be installed by a package manager, which ark will not overwrite.", target)
+	if hint := packageManagerHint(target); hint != "" {
+		msg += "\n" + hint
+	}
+	return errors.New(msg)
+}
+
+// packageManagerHint is best-effort: if the install path looks like a
+// recognizable package-manager prefix, suggest the matching upgrade command.
+// Empty string means "no specific guidance" — the generic error still applies.
+func packageManagerHint(target string) string {
+	switch {
+	case strings.HasPrefix(target, "/opt/homebrew/"),
+		strings.HasPrefix(target, "/usr/local/Cellar/"),
+		strings.Contains(target, "/Cellar/"):
+		return "Try: brew upgrade ark"
+	case strings.HasPrefix(target, "/opt/local/"):
+		return "Try: sudo port upgrade ark"
+	case strings.HasPrefix(target, "/usr/bin/"), strings.HasPrefix(target, "/usr/sbin/"):
+		return "Try your distro's package manager (e.g. apt upgrade ark)."
+	}
+	return ""
 }
 
 func latestGitHubRelease(ctx context.Context, client *http.Client, repository string) (githubRelease, error) {

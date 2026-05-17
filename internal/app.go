@@ -21,6 +21,7 @@ type App struct {
 	config   Config
 	registry *Registry
 	images   *ImageStore
+	reserved map[string]struct{}
 	in       io.Reader
 	out      io.Writer
 	errOut   io.Writer
@@ -36,37 +37,19 @@ type InitOptions struct {
 	AssumeYes     bool
 }
 
+// NewApp is intentionally cheap: it resolves paths and wires I/O streams,
+// but does no disk I/O and loads no config. All filesystem touches happen
+// in Prepare so tests can construct an App without a real ~/.ark layout.
 func NewApp(in io.Reader, out, errOut io.Writer) (*App, error) {
 	paths, err := DefaultPaths()
 	if err != nil {
 		return nil, err
 	}
-	if err := paths.EnsureControlPlane(); err != nil {
-		return nil, err
-	}
-	if err := EnsureDefaultConfig(paths); err != nil {
-		return nil, err
-	}
-	config, err := LoadConfig(paths)
-	if err != nil {
-		return nil, err
-	}
-	if err := EnsureImageSource(config); err != nil {
-		return nil, err
-	}
-	projectRoot, err := config.ProjectRootPath()
-	if err != nil {
-		return nil, err
-	}
-	paths.ProjectRoot = projectRoot
 	app := &App{
-		paths:    paths,
-		config:   config,
-		registry: NewRegistry(paths),
-		images:   NewImageStore(paths),
-		in:       in,
-		out:      out,
-		errOut:   errOut,
+		paths:  paths,
+		in:     in,
+		out:    out,
+		errOut: errOut,
 	}
 	if file, ok := in.(*os.File); ok {
 		app.stdin = file
@@ -77,6 +60,9 @@ func NewApp(in io.Reader, out, errOut io.Writer) (*App, error) {
 	return app, nil
 }
 
+// Prepare materializes everything NewApp deferred: control-plane dirs,
+// default config + image source files, the loaded config, and the
+// registry/image stores that depend on the final ProjectRoot.
 func (a *App) Prepare(ctx context.Context) error {
 	if err := a.paths.EnsureControlPlane(); err != nil {
 		return err
@@ -84,29 +70,35 @@ func (a *App) Prepare(ctx context.Context) error {
 	if err := EnsureDefaultConfig(a.paths); err != nil {
 		return err
 	}
+	config, err := LoadConfig(a.paths)
+	if err != nil {
+		return err
+	}
+	a.config = config
 	if err := EnsureImageSource(a.config); err != nil {
 		return err
 	}
+	projectRoot, err := a.config.ProjectRootPath()
+	if err != nil {
+		return err
+	}
+	a.paths.ProjectRoot = projectRoot
+
+	// Registry/ImageStore copy Paths by value, so they must be constructed
+	// after ProjectRoot is finalized.
+	a.registry = NewRegistry(a.paths)
+	a.images = NewImageStore(a.paths)
 	if err := a.registry.EnsureDefault(ctx); err != nil {
 		return err
 	}
 	if err := a.images.EnsureDefault(ctx); err != nil {
 		return err
 	}
-	if _, err := LoadConfig(a.paths); err != nil {
-		return err
-	}
-	if _, err := a.registry.Load(ctx); err != nil {
-		return err
-	}
-	if _, err := a.images.Load(ctx); err != nil {
-		return err
-	}
 	return nil
 }
 
 func (a *App) InitProject(ctx context.Context, name string, opts InitOptions) error {
-	if err := ValidateProjectName(name); err != nil {
+	if err := ValidateProjectName(name, a.reserved); err != nil {
 		return err
 	}
 	rt, selectedRuntime, err := ResolveRuntime(ctx, opts.Runtime)
@@ -154,10 +146,10 @@ func (a *App) InitProject(ctx context.Context, name string, opts InitOptions) er
 		return err
 	}
 
-	if err := a.prepareProjectMounts(project); err != nil {
+	if err := ensureProjectControlPlane(a.paths, project); err != nil {
 		return err
 	}
-	volumeNames := projectCreateVolumeNames(project)
+	volumeNames := projectVolumeNames(project)
 	createdVolumes := make([]string, 0, len(volumeNames))
 	for _, volumeName := range volumeNames {
 		if err := rt.CreateVolume(ctx, volumeName); err != nil {
@@ -399,7 +391,7 @@ func (a *App) execProject(ctx context.Context, rt Runtime, project Project, cmd 
 }
 
 func (a *App) startGitBroker(ctx context.Context, project Project) (*GitBroker, error) {
-	if err := a.prepareProjectMounts(project); err != nil {
+	if err := ensureProjectControlPlane(a.paths, project); err != nil {
 		return nil, err
 	}
 	socketPath := filepath.Join(a.paths.ProjectSocketDir(project), filepath.Base(a.config.Git.BrokerSocket))
