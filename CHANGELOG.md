@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.1.0](https://github.com/Dave-lab12/ark/compare/v0.0.4...v0.1.0) (2026-05-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **engine:** Secures the broker's TCP fallback path via random 32-byte token-based wire authentication.
+
+### Features
+
+* **cli:** implement container port forwarding support via --port flag ([06019e5](https://github.com/Dave-lab12/ark/commit/06019e59431cca79a3e74017998e62b48c862014))
+
+
+### Bug Fixes
+
+* Add version and build output to CLI ([1cad957](https://github.com/Dave-lab12/ark/commit/1cad95741b330bce33503b6a6780758ac3db259e))
+* **engine:** security hardening and codebase cleanup ([93637af](https://github.com/Dave-lab12/ark/commit/93637af7829855e76410dd4a8837d882d0abb224))
+* **image:** init hooks, readiness signal, broker env hardening ([317a8e2](https://github.com/Dave-lab12/ark/commit/317a8e2df56ae41193863b7a4e09a2d09bb996cf))
+
 ## [0.0.4](https://github.com/Dave-lab12/ark/compare/v0.0.3...v0.0.4) (2026-05-14)
 
 
