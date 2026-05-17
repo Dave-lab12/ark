@@ -11,6 +11,12 @@ import (
 	"github.com/spf13/cobra"
 )
 
+const (
+	flagPort    = "port"
+	flagNoPorts = "no-ports"
+	flagPorts   = "ports"
+)
+
 func Main(ctx context.Context, args []string) int {
 	if isVersionArgList(args) {
 		fmt.Fprintln(os.Stdout, VersionString())
@@ -457,10 +463,11 @@ func isVersionArgList(args []string) bool {
 }
 
 func addPortFlags(cmd *cobra.Command, ports *PortOptions) {
-	cmd.Flags().StringSliceVar(&ports.Specs, "port", nil,
-		"expose ports; use --port 3000, --port -3000 to remove, --port =3000 to replace")
-	cmd.Flags().BoolVar(&ports.Clear, "no-ports", false, "remove all configured ports")
-	cmd.Flags().BoolVar(&ports.List, "ports", false, "list current ports without changing them")
+	cmd.Flags().StringSliceVar(&ports.Specs, flagPort, nil,
+		"expose ports (sticky); --port 3000 adds, --port -3000 removes, "+
+			"--port =3000 replaces; comma-separated tokens are independent")
+	cmd.Flags().BoolVar(&ports.Clear, flagNoPorts, false, "remove all configured ports")
+	cmd.Flags().BoolVar(&ports.List, flagPorts, false, "list current ports without changing them")
 }
 
 func parsePortOptionsFromArgs(args []string) ([]string, PortOptions, error) {
@@ -472,17 +479,17 @@ func parsePortOptionsFromArgs(args []string) ([]string, PortOptions, error) {
 		case arg == "--":
 			cmdArgs = append(cmdArgs, args[i+1:]...)
 			i = len(args)
-		case arg == "--port":
+		case arg == "--"+flagPort:
 			if i+1 >= len(args) {
-				return nil, ports, errors.New("flag needs an argument: --port")
+				return nil, ports, errors.New("flag needs an argument: --" + flagPort)
 			}
 			ports.Specs = append(ports.Specs, args[i+1])
 			i++
-		case strings.HasPrefix(arg, "--port="):
-			ports.Specs = append(ports.Specs, strings.TrimPrefix(arg, "--port="))
-		case arg == "--no-ports":
+		case strings.HasPrefix(arg, "--"+flagPort+"="):
+			ports.Specs = append(ports.Specs, strings.TrimPrefix(arg, "--"+flagPort+"="))
+		case arg == "--"+flagNoPorts:
 			ports.Clear = true
-		case arg == "--ports":
+		case arg == "--"+flagPorts:
 			ports.List = true
 		default:
 			cmdArgs = append(cmdArgs, arg)

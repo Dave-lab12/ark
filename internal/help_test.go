@@ -9,6 +9,20 @@ import (
 	"testing"
 )
 
+func TestRootHelpDisablesColorWhenNotInteractive(t *testing.T) {
+	var out bytes.Buffer
+	var errOut bytes.Buffer
+	app := &App{out: &out, errOut: &errOut}
+	cmd := app.rootCommand(context.Background())
+	cmd.SetArgs([]string{"--help"})
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext: %v", err)
+	}
+	if strings.Contains(out.String(), "\x1b[") {
+		t.Fatalf("non-interactive help should not contain ANSI escapes:\n%q", out.String())
+	}
+}
+
 func TestRootHelpShowsCommandGroups(t *testing.T) {
 	var out bytes.Buffer
 	var errOut bytes.Buffer

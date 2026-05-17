@@ -231,26 +231,13 @@ func (a *App) StartProject(ctx context.Context, name string, enter bool, ports P
 		a.printProjectPorts(project)
 		return nil
 	}
-	var desired []PortMapping
-	if ports.Specified {
-		if !ports.Clear {
-			desired, err = ParsePortChange(ports.Specs, project.Ports)
-			if err != nil {
-				return err
-			}
-		}
-	}
 	rt, err := a.runtimeForProject(ctx, project)
 	if err != nil {
 		return err
 	}
-	if ports.Specified {
-		if !PortMappingsEqual(project.Ports, desired) {
-			project, err = a.applyPortChange(ctx, rt, project, desired)
-			if err != nil {
-				return err
-			}
-		}
+	project, err = a.applyRequestedPorts(ctx, rt, project, ports)
+	if err != nil {
+		return err
 	}
 	if err := a.warnProjectImageStale(ctx, project); err != nil {
 		return err
@@ -364,27 +351,13 @@ func (a *App) RunProject(ctx context.Context, name string, cmd []string, ports P
 		a.printProjectPorts(project)
 		return nil
 	}
-	var desired []PortMapping
-	if ports.Specified && !ports.Clear {
-		desired, err = ParsePortChange(ports.Specs, project.Ports)
-		if err != nil {
-			return err
-		}
-	}
 	rt, err := a.runtimeForProject(ctx, project)
 	if err != nil {
 		return err
 	}
-	if ports.Specified {
-		if ports.Clear {
-			desired = nil
-		}
-		if !PortMappingsEqual(project.Ports, desired) {
-			project, err = a.applyPortChange(ctx, rt, project, desired)
-			if err != nil {
-				return err
-			}
-		}
+	project, err = a.applyRequestedPorts(ctx, rt, project, ports)
+	if err != nil {
+		return err
 	}
 	if err := a.warnProjectImageStale(ctx, project); err != nil {
 		return err
@@ -471,6 +444,27 @@ func (a *App) createProjectContainer(ctx context.Context, rt Runtime, project Pr
 	return err
 }
 
+// applyRequestedPorts parses ports.Specs against the project's current ports,
+// applies the change via applyPortChange if anything differs, and returns the
+// (possibly updated) project. It is a no-op when ports.Specified is false.
+func (a *App) applyRequestedPorts(ctx context.Context, rt Runtime, project Project, ports PortOptions) (Project, error) {
+	if !ports.Specified {
+		return project, nil
+	}
+	var desired []PortMapping
+	if !ports.Clear {
+		var err error
+		desired, err = ParsePortChange(ports.Specs, project.Ports)
+		if err != nil {
+			return project, err
+		}
+	}
+	if PortMappingsEqual(project.Ports, desired) {
+		return project, nil
+	}
+	return a.applyPortChange(ctx, rt, project, desired)
+}
+
 func (a *App) applyPortChange(ctx context.Context, rt Runtime, project Project, desired []PortMapping) (Project, error) {
 	container, err := rt.Inspect(ctx, project.ContainerName)
 	if err != nil && !errors.Is(err, ErrNotFound) {
@@ -480,9 +474,9 @@ func (a *App) applyPortChange(ctx context.Context, rt Runtime, project Project, 
 	if container != nil && container.Running {
 		if !project.AutoRecreateOnPortChange {
 			ok, err := a.confirm(fmt.Sprintf(
-				"%s is running. Changing ports requires recreating the container.\n"+
-					"Running processes in the container will be terminated. /work and home volumes are preserved.\n"+
-					"Continue? (this will be remembered for this project)",
+				"%s is running. Changing ports recreates the container.\n"+
+					"Files in /work and your home volume are preserved. Processes running inside will stop.\n"+
+					"Continue? (remembered for this project)",
 				project.Name,
 			))
 			if err != nil {
@@ -507,6 +501,12 @@ func (a *App) applyPortChange(ctx context.Context, rt Runtime, project Project, 
 	}
 
 	project.Ports = desired
+
+	for _, volumeName := range projectVolumeNames(project) {
+		if err := rt.CreateVolume(ctx, volumeName); err != nil {
+			return project, err
+		}
+	}
 
 	if err := a.createProjectContainer(ctx, rt, project); err != nil {
 		return project, err

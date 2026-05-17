@@ -147,10 +147,14 @@ Ports are sticky — they persist across stop/start cycles and are re-published 
 ark myapp --port 3000           # expose port 3000
 ark myapp --port 3000,3001      # expose multiple ports
 ark myapp --port -3001          # remove port 3001
+ark myapp --port -3000,-3001    # remove multiple ports (each needs its own minus)
+ark myapp --port +3000,-3001    # add and remove in one command
 ark myapp --port =3000          # replace all ports with just 3000
 ark myapp --ports               # list current ports
 ark myapp --no-ports            # clear all ports
 ```
+
+Each comma-separated token is independent — `--port -3000,3001` means "remove 3000, add 3001." To remove two ports, use `--port -3000,-3001`.
 
 **Port formats:**
 

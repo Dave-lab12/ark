@@ -32,5 +32,10 @@ func (a *App) Doctor(ctx context.Context) error {
 	fmt.Fprintf(a.out, "logs: %s\n", a.paths.LogsDir)
 	fmt.Fprintf(a.out, "projects: %s\n", a.paths.ProjectRoot)
 	fmt.Fprintf(a.out, "image: %s\n", a.config.Image.Tag)
+	if a.config.Git.Enabled {
+		fmt.Fprintln(a.out, "git broker: enabled (TCP fallback authenticated)")
+	} else {
+		fmt.Fprintln(a.out, "git broker: disabled")
+	}
 	return nil
 }

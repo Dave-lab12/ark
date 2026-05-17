@@ -63,7 +63,7 @@ func TestRunProjectPortChangeStoppedRecreatesWithoutConfirmation(t *testing.T) {
 	if !reflect.DeepEqual(rt.calls, wantCalls) {
 		t.Fatalf("calls mismatch:\n got: %v\nwant: %v", rt.calls, wantCalls)
 	}
-	if strings.Contains(out.String(), "Changing ports requires recreating") {
+	if strings.Contains(out.String(), "Continue?") {
 		t.Fatalf("unexpected confirmation prompt: %q", out.String())
 	}
 }
@@ -132,6 +132,26 @@ func TestRunProjectPortsListModeDoesNotTouchRuntime(t *testing.T) {
 	}
 	if got := out.String(); !strings.Contains(got, "app ports:") || !strings.Contains(got, "  3000") {
 		t.Fatalf("unexpected list output: %q", got)
+	}
+}
+
+func TestRunProjectPortChangeRecreatesVolumes(t *testing.T) {
+	ctx := context.Background()
+	rt := &fakePortRuntime{
+		inspectResults: []*Container{
+			{Running: false, Status: "exited"},
+			{Running: false, Status: "created"},
+		},
+	}
+	app, _, _ := newPortTestApp(t, "", testProject(t, nil, false), rt)
+
+	if err := app.RunProject(ctx, "app", nil, PortOptions{Specs: []string{"3000"}}); err != nil {
+		t.Fatalf("RunProject: %v", err)
+	}
+
+	wantVolumes := []string{"ark-test-home", "ark-test-cache"}
+	if !reflect.DeepEqual(rt.createdVolumes, wantVolumes) {
+		t.Fatalf("createdVolumes mismatch:\n got: %v\nwant: %v", rt.createdVolumes, wantVolumes)
 	}
 }
 
@@ -210,6 +230,7 @@ type fakePortRuntime struct {
 	inspectResults []*Container
 	createSpecs    []CreateSpec
 	calls          []string
+	createdVolumes []string
 }
 
 func (f *fakePortRuntime) Name() string {
@@ -268,7 +289,8 @@ func (f *fakePortRuntime) List(context.Context) ([]Container, error) {
 	return nil, nil
 }
 
-func (f *fakePortRuntime) CreateVolume(context.Context, string) error {
+func (f *fakePortRuntime) CreateVolume(_ context.Context, name string) error {
+	f.createdVolumes = append(f.createdVolumes, name)
 	return nil
 }
 

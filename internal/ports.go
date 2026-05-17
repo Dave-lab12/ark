@@ -21,9 +21,19 @@ type PortChange struct {
 	Remove  []PortMapping // existing mappings to remove (matched by ContainerPort + Protocol)
 }
 
-// ParsePortChange parses one or more --port values (each may itself be
-// comma-separated) against the project's current ports. Returns the
-// resolved final set and an error.
+// ParsePortChange parses one or more --port values against the project's
+// current ports and returns the resolved final set.
+//
+// Sigils are token-local. Inside a single comma-separated value, each token
+// is parsed independently:
+//
+//	--port -3000,3001       removes 3000, adds 3001
+//	--port -3000,-3001      removes both
+//	--port =3000,8080:80    replaces all ports with {3000, 8080:80}
+//
+// This shape allows mixed add/remove in one invocation
+// (--port +3002,-3001) at the cost of making "remove these two" require
+// two minus signs (--port -3000,-3001).
 func ParsePortChange(specs []string, current []PortMapping) ([]PortMapping, error) {
 	change, err := parsePortChange(specs, current)
 	if err != nil {
