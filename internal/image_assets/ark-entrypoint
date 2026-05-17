@@ -1,33 +1,57 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-mkdir -p /run/ark /home/dev/.cache /home/dev/.ssh
+# -----------------------------------------------------------------------------
+# Bookkeeping: directories and dotfiles
+# -----------------------------------------------------------------------------
+mkdir -p \
+    /run/ark \
+    /home/dev/.cache \
+    /home/dev/.ssh \
+    /home/dev/.ark/init.d
 
 if [[ ! -e /home/dev/.zshrc ]]; then
     cat > /home/dev/.zshrc <<'EOF'
 # Created by Ark. Customize freely.
-
 export SHELL=/usr/bin/zsh
-export GIT_SSH=/usr/local/bin/ark-ssh
+export GIT_SSH_COMMAND=/usr/local/bin/ark-ssh
 EOF
 fi
 
 if [[ ! -e /home/dev/.profile ]]; then
     cat > /home/dev/.profile <<'EOF'
 export SHELL=/usr/bin/zsh
-export GIT_SSH=/usr/local/bin/ark-ssh
+export GIT_SSH_COMMAND=/usr/local/bin/ark-ssh
 EOF
 fi
 
-chown -R dev:dev /home/dev
+# Targeted chown rather than -R: we only need to own the dotfiles/dirs we
+# may have just created. A full -R is O(home_volume_size) on every start.
+chown dev:dev \
+    /home/dev/.zshrc \
+    /home/dev/.profile \
+    /home/dev/.cache \
+    /home/dev/.ssh \
+    /home/dev/.ark \
+    /home/dev/.ark/init.d 2>/dev/null || true
 
-if [[ "${ARK_DOCKER_ENABLED:-true}" == "true" && "${ARK_START_DOCKERD:-true}" == "true" ]]; then
+# -----------------------------------------------------------------------------
+# Optional dockerd
+# -----------------------------------------------------------------------------
+dockerd_pid=0
+if [[ "${ARK_DOCKER_ENABLED:-true}" == "true" \
+   && "${ARK_START_DOCKERD:-true}" == "true" ]]; then
     data_root="${ARK_DOCKER_DATA_ROOT:-/var/lib/docker}"
     mkdir -p /var/run "${data_root}"
     if ! pgrep -x dockerd >/dev/null 2>&1; then
-        dockerd --host=unix:///var/run/docker.sock --data-root="${data_root}" >/tmp/dockerd.log 2>&1 &
+        dockerd \
+            --host=unix:///var/run/docker.sock \
+            --data-root="${data_root}" \
+            >/tmp/dockerd.log 2>&1 &
+        dockerd_pid=$!
     fi
-    for _ in $(seq 1 30); do
+    # Wait up to 30s for the daemon to come up.
+    for _ in $(seq 1 60); do
         if docker info >/dev/null 2>&1; then
             break
         fi
@@ -35,4 +59,76 @@ if [[ "${ARK_DOCKER_ENABLED:-true}" == "true" && "${ARK_START_DOCKERD:-true}" ==
     done
 fi
 
-exec sleep infinity
+# -----------------------------------------------------------------------------
+# User hooks
+#
+# Three layers, executed in this order:
+#   1. /etc/ark/init.d/*.sh        — baked into custom base images. Run as
+#                                    root in a subshell so env changes don't
+#                                    leak and a failing hook can't kill PID 1.
+#   2. /work/.ark/init.sh          — project-scoped, lives in the repo. Runs
+#                                    as the dev user.
+#   3. /home/dev/.ark/init.d/*.sh  — per-user, persists in the home volume
+#                                    across container rebuilds. Runs as dev.
+#
+# Failures are logged but never abort the container.
+# -----------------------------------------------------------------------------
+run_root_hooks() {
+    [[ -d /etc/ark/init.d ]] || return 0
+    for hook in /etc/ark/init.d/*.sh; do
+        [[ -r "${hook}" ]] || continue
+        ( set +e; source "${hook}" ) \
+            || echo "ark: root hook ${hook} failed (continuing)" >&2
+    done
+}
+
+run_user_hook() {
+    local script="$1"
+    su -p -s /bin/bash dev -c "bash '${script}'" \
+        || echo "ark: user hook ${script} failed (continuing)" >&2
+}
+
+run_root_hooks
+
+if [[ -r /work/.ark/init.sh ]]; then
+    run_user_hook /work/.ark/init.sh
+fi
+
+if [[ -d /home/dev/.ark/init.d ]]; then
+    for hook in /home/dev/.ark/init.d/*.sh; do
+        [[ -r "${hook}" ]] || continue
+        run_user_hook "${hook}"
+    done
+fi
+
+# -----------------------------------------------------------------------------
+# Ready
+# -----------------------------------------------------------------------------
+# The ark CLI can poll for this file via `docker exec test -f /run/ark/ready`
+# to know when it's safe to exec into the container.
+touch /run/ark/ready
+
+# -----------------------------------------------------------------------------
+# Graceful shutdown
+#
+# bash as PID 1 doesn't auto-forward signals to background children, so we
+# trap explicitly and SIGTERM dockerd before exiting. This avoids leaving
+# /var/lib/docker in a half-written state on `ark stop`.
+# -----------------------------------------------------------------------------
+shutdown() {
+    if (( dockerd_pid > 0 )); then
+        kill -TERM "${dockerd_pid}" 2>/dev/null || true
+        # Give dockerd up to ~10s to flush.
+        for _ in $(seq 1 20); do
+            kill -0 "${dockerd_pid}" 2>/dev/null || break
+            sleep 0.5
+        done
+    fi
+    rm -f /run/ark/ready
+    exit 0
+}
+trap shutdown TERM INT
+
+# Background sleep + wait so the trap actually fires.
+sleep infinity &
+wait $!

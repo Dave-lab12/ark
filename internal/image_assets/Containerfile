@@ -1,11 +1,28 @@
 ARG ARK_BASE_IMAGE=debian:bookworm-slim
 FROM ${ARK_BASE_IMAGE}
 
-ENV DEBIAN_FRONTEND=noninteractive
+# Use bash so RUN steps get -o pipefail semantics.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# OCI metadata. ARK_IMAGE_VERSION should be wired to ark's image fingerprint
+# (or a release tag) so the running image is traceable from `docker inspect`.
+ARG ARK_IMAGE_VERSION="dev"
+LABEL org.opencontainers.image.source="https://github.com/Dave-lab12/ark" \
+      org.opencontainers.image.title="ark-base" \
+      org.opencontainers.image.description="Base devbox image for ark" \
+      org.opencontainers.image.version="${ARK_IMAGE_VERSION}"
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
 ARG ARK_EXTRA_APT_PACKAGES=""
 
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends \
+# ---- Layer 1: system packages + Docker engine -------------------------------
+# Combined into one RUN so the apt index/cache is purged within the layer.
+RUN set -eux \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
         ca-certificates \
         curl \
         fd-find \
@@ -28,40 +45,77 @@ RUN apt-get update \
         xz-utils \
         zsh \
         ${ARK_EXTRA_APT_PACKAGES} \
-    && install -m 0755 -d /etc/apt/keyrings \
-    && curl -fsSL https://download.docker.com/linux/debian/gpg -o /etc/apt/keyrings/docker.asc \
-    && chmod a+r /etc/apt/keyrings/docker.asc \
-    && . /etc/os-release \
-    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${VERSION_CODENAME} stable" > /etc/apt/sources.list.d/docker.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
+ && install -m 0755 -d /etc/apt/keyrings \
+ && curl -fsSL https://download.docker.com/linux/debian/gpg \
+        -o /etc/apt/keyrings/docker.asc \
+ && chmod a+r /etc/apt/keyrings/docker.asc \
+ && . /etc/os-release \
+ && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian ${VERSION_CODENAME} stable" \
+        > /etc/apt/sources.list.d/docker.list \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends \
         containerd.io \
         docker-buildx-plugin \
         docker-ce \
         docker-ce-cli \
         docker-compose-plugin \
-    && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
-    && curl -fsSL https://mise.run | MISE_INSTALL_PATH=/usr/local/bin/mise sh \
-    && groupadd -f docker \
-    && useradd -m -s /bin/zsh -u 1000 dev \
-    && usermod -aG sudo,docker dev \
-    && passwd -d dev \
-    && echo "dev ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev \
-    && chmod 0440 /etc/sudoers.d/dev \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+ && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/*
 
+# ---- Layer 2: mise + user + shell defaults ----------------------------------
+# UID/GID are build args so ark can match the host user and avoid /work
+# ownership weirdness on hosts where the primary user isn't 1000.
+ARG ARK_USER_UID=1000
+ARG ARK_USER_GID=1000
+# Empty MISE_VERSION installs the latest
+ARG MISE_VERSION=""
+
+RUN set -eux \
+ && curl -fsSL https://mise.run | \
+        MISE_VERSION="${MISE_VERSION}" \
+        MISE_INSTALL_PATH=/usr/local/bin/mise \
+        sh \
+ && groupadd -f docker \
+ && if ! getent group "${ARK_USER_GID}" >/dev/null; then \
+        groupadd -g "${ARK_USER_GID}" dev; \
+    fi \
+ && useradd -m -s /bin/zsh -u "${ARK_USER_UID}" -g "${ARK_USER_GID}" dev \
+ && usermod -aG sudo,docker dev \
+ && passwd -l dev \
+ && echo "dev ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev \
+ && chmod 0440 /etc/sudoers.d/dev \
+ && mkdir -p /etc/zsh \
+ && { \
+        echo '# ark base zsh defaults'; \
+        echo 'HISTFILE=$HOME/.zsh_history'; \
+        echo 'HISTSIZE=100000'; \
+        echo 'SAVEHIST=100000'; \
+        echo 'setopt SHARE_HISTORY INC_APPEND_HISTORY HIST_IGNORE_DUPS HIST_IGNORE_SPACE'; \
+        echo 'eval "$(/usr/local/bin/mise activate zsh)"'; \
+    } >> /etc/zsh/zshrc
+
+# ---- Ark scripts ------------------------------------------------------------
 COPY ark-entrypoint /usr/local/bin/ark-entrypoint
-COPY ark-ssh /usr/local/bin/ark-ssh
-
+COPY ark-ssh        /usr/local/bin/ark-ssh
 RUN chmod 0755 /usr/local/bin/ark-entrypoint /usr/local/bin/ark-ssh
 
 WORKDIR /work
 
-ENV SHELL=/usr/bin/zsh
-ENV GIT_SSH=/usr/local/bin/ark-ssh
+# GIT_SSH_COMMAND (not GIT_SSH) is the modern hook and is shell-interpreted,
+# which leaves room for flags later without rewrapping the binary.
+ENV SHELL=/usr/bin/zsh \
+    GIT_SSH_COMMAND=/usr/local/bin/ark-ssh \
+    USER=dev \
+    HOME=/home/dev
 
-ENV USER=dev
-ENV HOME=/home/dev
+# Healthcheck is intentionally omitted: dockerd is conditional on the project
+# config (start_dockerd), so a baked-in `docker info` probe would falsely
+# report unhealthy when dockerd is disabled. Readiness is better handled by
+# ark-entrypoint writing /run/ark/ready and the ark CLI polling for it.
+#
+# If you want one anyway, uncomment:
+# HEALTHCHECK --interval=15s --timeout=3s --start-period=20s --retries=3 \
+#     CMD docker info >/dev/null 2>&1 || exit 1
 
 ENTRYPOINT ["/usr/local/bin/ark-entrypoint"]
