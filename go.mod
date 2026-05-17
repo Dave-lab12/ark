@@ -1,4 +1,4 @@
-module ark
+module github.com/Dave-lab12/ark
 
 go 1.26.3
 

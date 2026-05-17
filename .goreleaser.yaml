@@ -19,7 +19,7 @@ builds:
       - amd64
       - arm64
     ldflags:
-      - -s -w -X ark/internal.ArkVersion={{ .Version }} -X ark/internal.ArkBuild={{ .Env.ARK_BUILD_NUMBER }}
+      - -s -w -X github.com/Dave-lab12/ark/internal.ArkVersion={{ .Version }} -X github.com/Dave-lab12/ark/internal.ArkBuild={{ .Env.ARK_BUILD_NUMBER }}
 
 archives:
   - id: default

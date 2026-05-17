@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 
-	"ark/internal"
+	"github.com/Dave-lab12/ark/internal"
 )
 
 func main() {
