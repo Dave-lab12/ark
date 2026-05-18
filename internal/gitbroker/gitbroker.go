@@ -32,15 +32,6 @@ func brokerHeaderReadTimeoutForTest(d time.Duration) time.Duration {
 	return prev
 }
 
-const DefaultBrokerSocketPath = "/run/ark/git-broker.sock"
-
-var DefaultAllowedGitHosts = []string{
-	"github.com",
-	"gitlab.com",
-	"bitbucket.org",
-	"ssh.dev.azure.com",
-}
-
 var allowedGitCommands = map[string]struct{}{
 	"git-upload-pack":    {},
 	"git-receive-pack":   {},

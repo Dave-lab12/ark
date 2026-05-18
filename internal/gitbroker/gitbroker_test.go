@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dave-lab12/ark/internal/defaults"
 )
 
 // dialUnix opens a unix-socket connection to the broker.
@@ -71,7 +73,7 @@ func startTestBroker(t *testing.T) (*GitBroker, *bytes.Buffer) {
 	var errBuf bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	broker, err := StartGitBroker(ctx, sockPath, DefaultAllowedGitHosts, &errBuf)
+	broker, err := StartGitBroker(ctx, sockPath, defaults.DefaultAllowedGitHosts, &errBuf)
 	if err != nil {
 		if strings.Contains(err.Error(), "bind: operation not permitted") {
 			t.Skipf("unix sockets are not permitted in this sandbox: %v", err)

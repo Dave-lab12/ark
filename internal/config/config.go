@@ -10,7 +10,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 	"github.com/Dave-lab12/ark/internal/core"
-	"github.com/Dave-lab12/ark/internal/gitbroker"
+	"github.com/Dave-lab12/ark/internal/defaults"
 	"github.com/Dave-lab12/ark/internal/paths"
 )
 
@@ -86,8 +86,8 @@ func DefaultConfig() Config {
 		},
 		Git: GitConfig{
 			Enabled:      true,
-			BrokerSocket: gitbroker.DefaultBrokerSocketPath,
-			Hosts:        append([]string(nil), gitbroker.DefaultAllowedGitHosts...),
+			BrokerSocket: defaults.DefaultBrokerSocketPath,
+			Hosts:        append([]string(nil), defaults.DefaultAllowedGitHosts...),
 		},
 		Docker: DockerConfig{
 			Enabled:      true,

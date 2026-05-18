@@ -1,3 +1,5 @@
+// Package internal is the CLI/application facade.
+// New domain code should import domain packages directly and must not import internal.
 package internal
 
 import (
@@ -6,6 +8,7 @@ import (
 	"os"
 
 	configpkg "github.com/Dave-lab12/ark/internal/config"
+	defaultspkg "github.com/Dave-lab12/ark/internal/defaults"
 	devcontainerpkg "github.com/Dave-lab12/ark/internal/devcontainer"
 	editorpkg "github.com/Dave-lab12/ark/internal/editor"
 	gitbrokerpkg "github.com/Dave-lab12/ark/internal/gitbroker"
@@ -40,11 +43,11 @@ type EditorMode = editorpkg.EditorMode
 const (
 	EditorModeAttach             = editorpkg.EditorModeAttach
 	EditorModeDevcontainerNative = editorpkg.EditorModeDevcontainerNative
-	DefaultBrokerSocketPath      = gitbrokerpkg.DefaultBrokerSocketPath
+	DefaultBrokerSocketPath      = defaultspkg.DefaultBrokerSocketPath
 	portRangeErrorText           = portspkg.PortRangeErrorText
 )
 
-var DefaultAllowedGitHosts = gitbrokerpkg.DefaultAllowedGitHosts
+var DefaultAllowedGitHosts = defaultspkg.DefaultAllowedGitHosts
 
 func DefaultConfig() Config { return configpkg.DefaultConfig() }
 
