@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.1](https://github.com/Dave-lab12/ark/compare/v0.1.0...v0.1.1) (2026-05-18)
+
+
+### Bug Fixes
+
+* **build:** update module path to github URL and add installation guide ([bac01f4](https://github.com/Dave-lab12/ark/commit/bac01f49736dce0239ed85b93e2e778560efeebf))
+* **cli:** add 'ark edit' command and support for native devcontainer-attached editor sessions ([16ddd56](https://github.com/Dave-lab12/ark/commit/16ddd56488d2596d2a5ca96a08d8bdc9948ef33a))
+* **cli:** add `ark edit` command for container-attached editor sessions ([cae6cd8](https://github.com/Dave-lab12/ark/commit/cae6cd8fa01741ab9159fc24e0e6a57d033b1e6d))
+
 ## [0.1.0](https://github.com/Dave-lab12/ark/compare/v0.0.4...v0.1.0) (2026-05-17)
 
 
