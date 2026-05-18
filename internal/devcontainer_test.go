@@ -35,6 +35,30 @@ func TestBuildDevcontainerBasicProject(t *testing.T) {
 	}
 }
 
+func TestBuildDevcontainerWorkspaceFolderOverride(t *testing.T) {
+	project := devcontainerTestProject(nil, false)
+	config := DefaultConfig()
+	got := parseDevcontainerJSONWithOptions(t, project, config, DevcontainerRenderOptions{
+		WorkspaceFolder: "/work/packages/api",
+	})
+
+	if got["workspaceFolder"] != "/work/packages/api" {
+		t.Fatalf("workspaceFolder = %v, want /work/packages/api", got["workspaceFolder"])
+	}
+}
+
+func TestBuildDevcontainerImageTagFromOptions(t *testing.T) {
+	project := devcontainerTestProject(nil, false)
+	config := DefaultConfig()
+	got := parseDevcontainerJSONWithOptions(t, project, config, DevcontainerRenderOptions{
+		ImageTag: "ark-base:test",
+	})
+
+	if got["image"] != "ark-base:test" {
+		t.Fatalf("image = %v, want ark-base:test", got["image"])
+	}
+}
+
 func TestBuildDevcontainerWithDockerVolume(t *testing.T) {
 	project := devcontainerTestProject(nil, true)
 	got := parseDevcontainerJSON(t, project, DefaultConfig())
@@ -46,6 +70,9 @@ func TestBuildDevcontainerWithDockerVolume(t *testing.T) {
 	third, ok := mounts[2].(string)
 	if !ok || !strings.Contains(third, "ark-test-docker-devcontainer") {
 		t.Fatalf("third mount = %v, want docker volume with -devcontainer suffix", mounts[2])
+	}
+	if strings.Contains(third, "source=ark-test-docker,target=/var/lib/docker") {
+		t.Fatalf("third mount shares direct docker volume: %v", third)
 	}
 }
 
@@ -100,6 +127,7 @@ func TestBuildDevcontainerMixedTCPAndUDP(t *testing.T) {
 
 func TestBuildDevcontainerEnvFromProjectEnv(t *testing.T) {
 	project := devcontainerTestProject(nil, true)
+	project.SSHEnabled = true
 	config := DefaultConfig()
 	got := parseDevcontainerJSON(t, project, config)
 
@@ -115,6 +143,12 @@ func TestBuildDevcontainerEnvFromProjectEnv(t *testing.T) {
 	}
 	if _, ok := env["DOCKER_HOST"]; !ok {
 		t.Fatalf("DOCKER_HOST missing from containerEnv: %#v", env)
+	}
+	if _, ok := env["GIT_SSH_COMMAND"]; ok {
+		t.Fatalf("GIT_SSH_COMMAND should be omitted from native devcontainer env: %#v", env)
+	}
+	if _, ok := env["ARK_GIT_BROKER_SOCK"]; ok {
+		t.Fatalf("ARK_GIT_BROKER_SOCK should be omitted from native devcontainer env: %#v", env)
 	}
 }
 
@@ -138,11 +172,17 @@ func TestBuildDevcontainerDeterminism(t *testing.T) {
 	project := devcontainerTestProject([]PortMapping{mustPortMapping(t, "8080:80")}, true)
 	config := DefaultConfig()
 
-	first, err := BuildDevcontainer(project, config, "fingerprint", "version")
+	first, err := BuildDevcontainer(project, config, DevcontainerRenderOptions{
+		ImageFingerprint: "fingerprint",
+		ArkVersion:       "version",
+	})
 	if err != nil {
 		t.Fatalf("BuildDevcontainer first: %v", err)
 	}
-	second, err := BuildDevcontainer(project, config, "fingerprint", "version")
+	second, err := BuildDevcontainer(project, config, DevcontainerRenderOptions{
+		ImageFingerprint: "fingerprint",
+		ArkVersion:       "version",
+	})
 	if err != nil {
 		t.Fatalf("BuildDevcontainer second: %v", err)
 	}
@@ -155,7 +195,10 @@ func TestBuildDevcontainerImageFingerprintFromParameter(t *testing.T) {
 	project := devcontainerTestProject(nil, false)
 	project.ImageFingerprint = "old"
 
-	data, err := BuildDevcontainer(project, DefaultConfig(), "new", "version")
+	data, err := BuildDevcontainer(project, DefaultConfig(), DevcontainerRenderOptions{
+		ImageFingerprint: "new",
+		ArkVersion:       "version",
+	})
 	if err != nil {
 		t.Fatalf("BuildDevcontainer: %v", err)
 	}
@@ -192,7 +235,15 @@ func devcontainerTestProject(ports []PortMapping, docker bool) Project {
 
 func parseDevcontainerJSON(t *testing.T, project Project, config Config) map[string]any {
 	t.Helper()
-	data, err := BuildDevcontainer(project, config, "fingerprint", "version")
+	return parseDevcontainerJSONWithOptions(t, project, config, DevcontainerRenderOptions{
+		ImageFingerprint: "fingerprint",
+		ArkVersion:       "version",
+	})
+}
+
+func parseDevcontainerJSONWithOptions(t *testing.T, project Project, config Config, opts DevcontainerRenderOptions) map[string]any {
+	t.Helper()
+	data, err := BuildDevcontainer(project, config, opts)
 	if err != nil {
 		t.Fatalf("BuildDevcontainer: %v", err)
 	}

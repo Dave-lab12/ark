@@ -138,6 +138,18 @@ func DirExistsNonEmpty(path string) (bool, error) {
 	return len(entries) > 0, nil
 }
 
+func mkdirAllWithMode(path string, perm os.FileMode) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.MkdirAll(path, perm); err != nil {
+		return err
+	}
+	return os.Chmod(path, perm)
+}
+
 func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {

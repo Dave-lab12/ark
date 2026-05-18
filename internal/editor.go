@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -129,13 +130,8 @@ func normalizeEditorName(name string) string {
 }
 
 // BuildRemoteAuthority returns the value for the editor's --remote flag.
-//
-// We deliberately use --remote + path instead of --folder-uri because
-// some VS Code forks (Cursor, Windsurf, Antigravity) canonicalize the
-// --folder-uri argument, which percent-encodes the "+" separator in
-// "attached-container+<hex>" to "%2B" and breaks the Dev Containers
-// URI parser. --remote takes the authority as a flag value, so no URL
-// canonicalization happens.
+// This is used only for editors verified to support VS Code's
+// attached-container resolver, currently VS Code, code-insiders, and Cursor.
 func BuildRemoteAuthority(containerName string) string {
 	return "attached-container+" + hex.EncodeToString([]byte(containerName))
 }
@@ -153,6 +149,30 @@ func resolveContainerFolder(folder, workdir string) string {
 		return folder
 	}
 	return workdir + "/" + folder
+}
+
+// resolveNativeWorkspaceFolder resolves --folder to the container path that
+// editor-owned devcontainers should open, while keeping the host editor launch
+// rooted at the project directory.
+func resolveNativeWorkspaceFolder(folder, workdir string) (string, error) {
+	workdir = path.Clean(strings.TrimSpace(workdir))
+	if !path.IsAbs(workdir) {
+		return "", fmt.Errorf("container workdir %q must be absolute", workdir)
+	}
+	if strings.TrimSpace(folder) == "" {
+		return workdir, nil
+	}
+
+	candidate := strings.TrimSpace(folder)
+	if path.IsAbs(candidate) {
+		candidate = path.Clean(candidate)
+	} else {
+		candidate = path.Clean(path.Join(workdir, candidate))
+	}
+	if candidate != workdir && !strings.HasPrefix(candidate, strings.TrimRight(workdir, "/")+"/") {
+		return "", fmt.Errorf("--folder %q is outside the container workdir %q; native-mode editors can only open paths inside the project", folder, workdir)
+	}
+	return candidate, nil
 }
 
 // stat is a thin wrapper kept indirected so tests can stub the filesystem

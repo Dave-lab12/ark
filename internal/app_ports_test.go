@@ -231,6 +231,10 @@ type fakePortRuntime struct {
 	createSpecs    []CreateSpec
 	calls          []string
 	createdVolumes []string
+	imageExists    bool
+	imageExistsSet bool
+	imageExistsTag []string
+	buildImageSpec []BuildImageSpec
 }
 
 func (f *fakePortRuntime) Name() string {
@@ -241,11 +245,16 @@ func (f *fakePortRuntime) Available(context.Context) error {
 	return nil
 }
 
-func (f *fakePortRuntime) ImageExists(context.Context, string) (bool, error) {
+func (f *fakePortRuntime) ImageExists(_ context.Context, tag string) (bool, error) {
+	f.imageExistsTag = append(f.imageExistsTag, tag)
+	if f.imageExistsSet {
+		return f.imageExists, nil
+	}
 	return true, nil
 }
 
-func (f *fakePortRuntime) BuildImage(context.Context, BuildImageSpec) error {
+func (f *fakePortRuntime) BuildImage(_ context.Context, spec BuildImageSpec) error {
+	f.buildImageSpec = append(f.buildImageSpec, spec)
 	return nil
 }
 

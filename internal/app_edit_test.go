@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -157,6 +158,7 @@ func TestEditProjectNativeModeWritesInProject(t *testing.T) {
 	project := testProject(t, nil, false)
 	app, _, _ := newPortTestApp(t, "", project, rt)
 	app.config.Editor.Default = fakeEditorBinary(t, "zed")
+	seedCurrentImage(t, ctx, app, project.Runtime)
 
 	prevLaunch := launchEditorPath
 	t.Cleanup(func() { launchEditorPath = prevLaunch })
@@ -183,6 +185,12 @@ func TestEditProjectNativeModeWritesInProject(t *testing.T) {
 	}
 	if launchedPath != project.Path {
 		t.Fatalf("editor opened at %q, want %q", launchedPath, project.Path)
+	}
+	if len(rt.imageExistsTag) != 1 || rt.imageExistsTag[0] != app.config.Image.Tag {
+		t.Fatalf("ImageExists calls = %v, want [%s]", rt.imageExistsTag, app.config.Image.Tag)
+	}
+	if len(rt.calls) != 0 {
+		t.Fatalf("native edit should not inspect/start ark-managed container, got calls %v", rt.calls)
 	}
 }
 
@@ -216,6 +224,7 @@ func TestEditProjectNativeModeOverwritesArkGeneratedFile(t *testing.T) {
 	project := testProject(t, nil, false)
 	app, _, _ := newPortTestApp(t, "", project, rt)
 	app.config.Editor.Default = fakeEditorBinary(t, "zed")
+	seedCurrentImage(t, ctx, app, project.Runtime)
 
 	prevLaunch := launchEditorPath
 	t.Cleanup(func() { launchEditorPath = prevLaunch })
@@ -243,46 +252,76 @@ func TestEditProjectNativeModeOverwritesArkGeneratedFile(t *testing.T) {
 	}
 }
 
-func TestEditProjectNativeModeFolderMapping(t *testing.T) {
-	ctx := context.Background()
-	rt := &fakePortRuntime{}
-	project := testProject(t, nil, false)
-	app, _, _ := newPortTestApp(t, "", project, rt)
-	app.config.Editor.Default = fakeEditorBinary(t, "zed")
-	app.config.Container.Workdir = "/work"
-
-	prevLaunch := launchEditorPath
-	t.Cleanup(func() { launchEditorPath = prevLaunch })
-	var launchedPath string
-	launchEditorPath = func(_, path string) error {
-		launchedPath = path
-		return nil
+func TestEditProjectNativeModeFolderSetsWorkspaceFolder(t *testing.T) {
+	tests := []struct {
+		name   string
+		folder string
+		want   string
+	}{
+		{name: "relative", folder: "packages/api", want: "/work/packages/api"},
+		{name: "absolute inside workdir", folder: "/work/packages/api", want: "/work/packages/api"},
 	}
 
-	if err := app.EditProject(ctx, project.Name, EditOptions{Folder: "packages/api"}); err != nil {
-		t.Fatalf("EditProject: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			rt := &fakePortRuntime{}
+			project := testProject(t, nil, false)
+			app, _, _ := newPortTestApp(t, "", project, rt)
+			app.config.Editor.Default = fakeEditorBinary(t, "zed")
+			app.config.Container.Workdir = "/work"
+			seedCurrentImage(t, ctx, app, project.Runtime)
 
-	want := filepath.Join(project.Path, "packages", "api")
-	if launchedPath != want {
-		t.Fatalf("launched %q, want %q", launchedPath, want)
+			prevLaunch := launchEditorPath
+			t.Cleanup(func() { launchEditorPath = prevLaunch })
+			var launchedPath string
+			launchEditorPath = func(_, path string) error {
+				launchedPath = path
+				return nil
+			}
+
+			if err := app.EditProject(ctx, project.Name, EditOptions{Folder: tt.folder}); err != nil {
+				t.Fatalf("EditProject: %v", err)
+			}
+
+			if launchedPath != project.Path {
+				t.Fatalf("launched %q, want project path %q", launchedPath, project.Path)
+			}
+			devcontainerPath := filepath.Join(project.Path, ".devcontainer", "devcontainer.json")
+			got := readDevcontainerJSONFile(t, devcontainerPath)
+			if got["workspaceFolder"] != tt.want {
+				t.Fatalf("workspaceFolder = %v, want %s", got["workspaceFolder"], tt.want)
+			}
+		})
 	}
 }
 
 func TestEditProjectNativeModeFolderOutsideWorkdir(t *testing.T) {
-	ctx := context.Background()
-	rt := &fakePortRuntime{}
-	project := testProject(t, nil, false)
-	app, _, _ := newPortTestApp(t, "", project, rt)
-	app.config.Editor.Default = fakeEditorBinary(t, "zed")
-	app.config.Container.Workdir = "/work"
+	tests := []string{"/tmp/foo", "../foo"}
+	for _, folder := range tests {
+		t.Run(folder, func(t *testing.T) {
+			ctx := context.Background()
+			rt := &fakePortRuntime{}
+			project := testProject(t, nil, false)
+			app, _, _ := newPortTestApp(t, "", project, rt)
+			app.config.Editor.Default = fakeEditorBinary(t, "zed")
+			app.config.Container.Workdir = "/work"
 
-	err := app.EditProject(ctx, project.Name, EditOptions{Folder: "/home/dev"})
-	if err == nil {
-		t.Fatal("expected error for folder outside workdir")
-	}
-	if !strings.Contains(err.Error(), "outside the container workdir") {
-		t.Fatalf("error didn't mention workdir: %v", err)
+			prevLaunch := launchEditorPath
+			t.Cleanup(func() { launchEditorPath = prevLaunch })
+			launchEditorPath = func(_, path string) error {
+				t.Fatalf("launchEditorPath called with %q", path)
+				return nil
+			}
+
+			err := app.EditProject(ctx, project.Name, EditOptions{Folder: folder})
+			if err == nil {
+				t.Fatal("expected error for folder outside workdir")
+			}
+			if !strings.Contains(err.Error(), "outside the container workdir") {
+				t.Fatalf("error didn't mention workdir: %v", err)
+			}
+		})
 	}
 }
 
@@ -334,4 +373,29 @@ func fakeEditorBinary(t *testing.T, name string) string {
 		t.Fatalf("write fake editor: %v", err)
 	}
 	return path
+}
+
+func seedCurrentImage(t *testing.T, ctx context.Context, app *App, runtimeName string) string {
+	t.Helper()
+	fingerprint, err := app.expectedImageFingerprint(runtimeName)
+	if err != nil {
+		t.Fatalf("expectedImageFingerprint: %v", err)
+	}
+	if err := app.recordBuiltImage(ctx, fingerprint); err != nil {
+		t.Fatalf("recordBuiltImage: %v", err)
+	}
+	return fingerprint
+}
+
+func readDevcontainerJSONFile(t *testing.T, path string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read devcontainer: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("parse devcontainer: %v\n%s", err, data)
+	}
+	return got
 }

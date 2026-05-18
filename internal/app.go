@@ -308,7 +308,7 @@ func (a *App) EditProject(ctx context.Context, name string, opts EditOptions) er
 	case EditorModeAttach:
 		return a.editProjectAttach(ctx, rt, project, binary, opts)
 	case EditorModeDevcontainerNative:
-		return a.editProjectNative(ctx, project, binary, opts)
+		return a.editProjectNative(ctx, rt, project, binary, opts)
 	default:
 		return fmt.Errorf("internal error: unknown editor mode for %q", editorName)
 	}
@@ -337,23 +337,33 @@ func (a *App) editProjectAttach(ctx context.Context, rt Runtime, project Project
 	return nil
 }
 
-func (a *App) editProjectNative(ctx context.Context, project Project, binary string, opts EditOptions) error {
+func (a *App) editProjectNative(ctx context.Context, rt Runtime, project Project, binary string, opts EditOptions) error {
+	workspaceFolder, err := resolveNativeWorkspaceFolder(opts.Folder, a.config.Container.Workdir)
+	if err != nil {
+		return err
+	}
+
 	devcontainerPath := filepath.Join(project.Path, ".devcontainer", "devcontainer.json")
 
 	if err := assertSafeToWriteDevcontainer(devcontainerPath); err != nil {
 		return err
 	}
 
-	imageFingerprint, err := a.currentImageFingerprint(ctx, project)
+	imageInfo, err := a.ensureBaseImage(ctx, rt, project.Runtime)
 	if err != nil {
 		return err
 	}
 
-	if err := os.MkdirAll(filepath.Dir(devcontainerPath), 0o755); err != nil {
+	if err := mkdirAllWithMode(filepath.Dir(devcontainerPath), 0o755); err != nil {
 		return fmt.Errorf("create .devcontainer directory: %w", err)
 	}
 
-	data, err := BuildDevcontainer(project, a.config, imageFingerprint, ArkVersion)
+	data, err := BuildDevcontainer(project, a.config, DevcontainerRenderOptions{
+		ImageTag:         imageInfo.Tag,
+		ImageFingerprint: imageInfo.Fingerprint,
+		ArkVersion:       ArkVersion,
+		WorkspaceFolder:  workspaceFolder,
+	})
 	if err != nil {
 		return err
 	}
@@ -367,18 +377,7 @@ func (a *App) editProjectNative(ctx context.Context, project Project, binary str
 		fmt.Fprintf(a.errOut, "ark: could not update .git/info/exclude: %v\n", err)
 	}
 
-	// Native mode: open the editor at the project path. Map --folder
-	// back to a host-side subdirectory if specified.
-	target := project.Path
-	if opts.Folder != "" {
-		host, err := mapContainerFolderToHost(opts.Folder, project.Path, a.config.Container.Workdir)
-		if err != nil {
-			return err
-		}
-		target = host
-	}
-
-	if err := launchEditorPath(binary, target); err != nil {
+	if err := launchEditorPath(binary, project.Path); err != nil {
 		return err
 	}
 	fmt.Fprintf(a.out, "Opening %s in %s...\n", project.Name, filepath.Base(binary))
@@ -387,7 +386,7 @@ func (a *App) editProjectNative(ctx context.Context, project Project, binary str
 }
 
 func (a *App) DevcontainerWrite(ctx context.Context, name string, inProject bool) error {
-	project, err := a.registry.Project(ctx, name)
+	project, rt, err := a.projectRuntime(ctx, name)
 	if err != nil {
 		return err
 	}
@@ -402,24 +401,30 @@ func (a *App) DevcontainerWrite(ctx context.Context, name string, inProject bool
 		target = a.paths.ArkOwnedDevcontainerPath(project)
 	}
 
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+	imageInfo, err := a.ensureBaseImage(ctx, rt, project.Runtime)
+	if err != nil {
+		return err
+	}
+
+	dirPerm := os.FileMode(0o700)
+	filePerm := os.FileMode(0o600)
+	if inProject {
+		dirPerm = 0o755
+		filePerm = 0o644
+	}
+	if err := mkdirAllWithMode(filepath.Dir(target), dirPerm); err != nil {
 		return fmt.Errorf("create directory: %w", err)
 	}
 
-	fingerprint, err := a.currentImageFingerprint(ctx, project)
+	data, err := BuildDevcontainer(project, a.config, DevcontainerRenderOptions{
+		ImageTag:         imageInfo.Tag,
+		ImageFingerprint: imageInfo.Fingerprint,
+		ArkVersion:       ArkVersion,
+	})
 	if err != nil {
 		return err
 	}
-
-	data, err := BuildDevcontainer(project, a.config, fingerprint, ArkVersion)
-	if err != nil {
-		return err
-	}
-	perm := os.FileMode(0o600)
-	if inProject {
-		perm = 0o644
-	}
-	if err := atomicWriteFile(target, data, perm); err != nil {
+	if err := atomicWriteFile(target, data, filePerm); err != nil {
 		return err
 	}
 
@@ -505,26 +510,6 @@ func entryAlreadyPresent(data []byte, entry string) bool {
 		}
 	}
 	return false
-}
-
-// mapContainerFolderToHost translates a --folder argument from container
-// space to host space. Native-mode editors open a host path; --folder
-// values like /work/packages/api need to become <project>/packages/api.
-//
-// Bare names ("packages/api") are treated as relative to the workdir,
-// same as the attach-mode resolveContainerFolder.
-//
-// Returns an error if the absolute path is outside the workdir — we
-// can't open arbitrary container paths in a host-side editor.
-func mapContainerFolderToHost(folder, projectPath, workdir string) (string, error) {
-	if !strings.HasPrefix(folder, "/") {
-		return filepath.Join(projectPath, folder), nil
-	}
-	rel, err := filepath.Rel(workdir, folder)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return "", fmt.Errorf("--folder %q is outside the container workdir %q; native-mode editors can only open paths inside the project", folder, workdir)
-	}
-	return filepath.Join(projectPath, rel), nil
 }
 
 func (a *App) StopProject(ctx context.Context, name string) error {
@@ -693,21 +678,6 @@ func (a *App) runtimeForProject(ctx context.Context, project Project) (Runtime, 
 		return nil, err
 	}
 	return rt, nil
-}
-
-// currentImageFingerprint returns the fingerprint of the currently-built
-// base image from the image store, falling back to the project's stored
-// fingerprint if the image store has nothing newer. The image store can
-// be ahead of the project after `ark image rebuild`.
-func (a *App) currentImageFingerprint(ctx context.Context, project Project) (string, error) {
-	state, err := a.images.Load(ctx)
-	if err != nil {
-		return "", err
-	}
-	if state.Image.Tag == a.config.Image.Tag && state.Image.Fingerprint != "" {
-		return state.Image.Fingerprint, nil
-	}
-	return project.ImageFingerprint, nil
 }
 
 func (a *App) createProjectContainer(ctx context.Context, rt Runtime, project Project) error {

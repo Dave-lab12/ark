@@ -24,19 +24,34 @@ type generatedDevcontainer struct {
 	Customizations  map[string]any    `json:"customizations,omitempty"`
 }
 
+type DevcontainerRenderOptions struct {
+	ImageTag         string
+	ImageFingerprint string
+	ArkVersion       string
+	WorkspaceFolder  string
+}
+
 // BuildDevcontainer renders the devcontainer.json content for a project.
 // It is a pure function — same inputs produce the same JSON bytes — so
 // "regenerate every time" is cheap and deterministic.
 //
-// imageFingerprint is passed explicitly (rather than read from
-// project.ImageFingerprint) so callers can use the current image-store
-// fingerprint, which may differ from the project's stored fingerprint
-// after `ark image rebuild`.
-func BuildDevcontainer(project Project, config Config, imageFingerprint, arkVersion string) ([]byte, error) {
+// Image metadata is passed explicitly (rather than read from the project)
+// so callers can use the current image-store state, which may differ from
+// the project's stored fields after `ark image rebuild`.
+func BuildDevcontainer(project Project, config Config, opts DevcontainerRenderOptions) ([]byte, error) {
+	imageTag := strings.TrimSpace(opts.ImageTag)
+	if imageTag == "" {
+		imageTag = config.Image.Tag
+	}
+	workspaceFolder := strings.TrimSpace(opts.WorkspaceFolder)
+	if workspaceFolder == "" {
+		workspaceFolder = config.Container.Workdir
+	}
+
 	dc := generatedDevcontainer{
 		Name:            "ark-" + project.Name,
-		Image:           config.Image.Tag,
-		WorkspaceFolder: config.Container.Workdir,
+		Image:           imageTag,
+		WorkspaceFolder: workspaceFolder,
 		// ${localWorkspaceFolder} is a Dev Containers spec variable
 		// resolved by the tool to "the folder the user opened in the
 		// editor." That's exactly what we want for native mode — the
@@ -60,8 +75,8 @@ func BuildDevcontainer(project Project, config Config, imageFingerprint, arkVers
 		Customizations: map[string]any{
 			"ark": map[string]any{
 				"generated":         true,
-				"ark_version":       arkVersion,
-				"image_fingerprint": imageFingerprint,
+				"ark_version":       opts.ArkVersion,
+				"image_fingerprint": opts.ImageFingerprint,
 			},
 		},
 	}
@@ -137,16 +152,24 @@ func devcontainerAppPorts(p Project) []any {
 	return out
 }
 
-// devcontainerEnv reuses ark's existing environment builder. This keeps
-// the devcontainer environment consistent with what `ark <name>` provides
-// (DOCKER_HOST, broker socket path, project identifiers, etc.).
+// devcontainerEnv reuses ark's existing environment builder where possible.
+// Git broker integration requires a long-lived broker and an Ark
+// control-plane mount; native devcontainers are editor-owned, so those
+// broker-specific variables are intentionally omitted for now.
 func devcontainerEnv(project Project, config Config) map[string]string {
 	env := map[string]string{}
 	for _, pair := range ProjectEnv(project, config) {
 		k, v, ok := strings.Cut(pair, "=")
-		if ok {
-			env[k] = v
+		if !ok {
+			continue
 		}
+		if k == "GIT_SSH_COMMAND" {
+			continue
+		}
+		if strings.HasPrefix(k, "ARK_GIT_BROKER_") {
+			continue
+		}
+		env[k] = v
 	}
 	return env
 }
