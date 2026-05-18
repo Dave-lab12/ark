@@ -110,12 +110,14 @@ func (a *App) rootCommand(ctx context.Context) *cobra.Command {
 
 	root.AddCommand(a.initCommand())
 	root.AddCommand(a.startCommand())
+	root.AddCommand(a.editCommand())
 	root.AddCommand(a.stopCommand())
 	root.AddCommand(a.removeCommand())
 	root.AddCommand(a.listCommand())
 	root.AddCommand(a.tempCommand())
 	root.AddCommand(a.configCommand())
 	root.AddCommand(a.imageCommand())
+	root.AddCommand(a.devcontainerCommand())
 	root.AddCommand(a.rebuildCommand())
 	root.AddCommand(a.doctorCommand())
 	root.AddCommand(a.updateCommand())
@@ -168,6 +170,27 @@ func (a *App) initCommand() *cobra.Command {
 	return cmd
 }
 
+func (a *App) devcontainerCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "devcontainer",
+		Short:   "manage devcontainer.json generation",
+		GroupID: "ark",
+	}
+	var inProject bool
+	writeCmd := &cobra.Command{
+		Use:   "write <name>",
+		Short: "write the devcontainer.json for a project",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return a.DevcontainerWrite(cmd.Context(), args[0], inProject)
+		},
+	}
+	writeCmd.Flags().BoolVar(&inProject, "in-project", false,
+		"write into <project>/.devcontainer/ instead of ~/.ark/devcontainers/")
+	cmd.AddCommand(writeCmd)
+	return cmd
+}
+
 func (a *App) startCommand() *cobra.Command {
 	var ports PortOptions
 	cmd := &cobra.Command{
@@ -184,6 +207,30 @@ func (a *App) startCommand() *cobra.Command {
 		},
 	}
 	addPortFlags(cmd, &ports)
+	return cmd
+}
+
+func (a *App) editCommand() *cobra.Command {
+	var opts EditOptions
+	var editor string
+	cmd := &cobra.Command{
+		Use:     "edit <name>",
+		Short:   "open a project in your editor",
+		GroupID: "projects",
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			opts.EditorOverride = editor
+			ports, err := normalizePortOptions(opts.Ports)
+			if err != nil {
+				return err
+			}
+			opts.Ports = ports
+			return a.EditProject(cmd.Context(), args[0], opts)
+		},
+	}
+	cmd.Flags().StringVar(&editor, "editor", "", "editor binary to launch (overrides [editor].default)")
+	cmd.Flags().StringVar(&opts.Folder, "folder", "", "subdirectory inside the container to open (relative to workdir, or absolute)")
+	addPortFlags(cmd, &opts.Ports)
 	return cmd
 }
 
@@ -429,7 +476,7 @@ func commandNameWidth(commands []*cobra.Command) int {
 
 func padRight(s string, width int) string {
 	if len(s) >= width {
-		return s
+		return s + "  "
 	}
 	return s + strings.Repeat(" ", width-len(s))
 }

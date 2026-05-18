@@ -9,16 +9,17 @@ import (
 )
 
 type Paths struct {
-	ArkHome        string
-	ImageDir       string
-	ImageStateFile string
-	SocketsDir     string
-	CacheDir       string
-	LogsDir        string
-	ConfigFile     string
-	StateFile      string
-	LockFile       string
-	ProjectRoot    string
+	ArkHome          string
+	ImageDir         string
+	ImageStateFile   string
+	SocketsDir       string
+	CacheDir         string
+	LogsDir          string
+	DevcontainersDir string
+	ConfigFile       string
+	StateFile        string
+	LockFile         string
+	ProjectRoot      string
 }
 
 func DefaultPaths() (Paths, error) {
@@ -30,16 +31,17 @@ func DefaultPaths() (Paths, error) {
 	arkHome := filepath.Join(home, ".ark")
 	stateFile := filepath.Join(arkHome, "state.json")
 	return Paths{
-		ArkHome:        arkHome,
-		ImageDir:       filepath.Join(arkHome, "image"),
-		ImageStateFile: filepath.Join(arkHome, "image", "state.json"),
-		SocketsDir:     filepath.Join(arkHome, "sockets"),
-		CacheDir:       filepath.Join(arkHome, "cache"),
-		LogsDir:        filepath.Join(arkHome, "logs"),
-		ConfigFile:     filepath.Join(arkHome, "config.toml"),
-		StateFile:      stateFile,
-		LockFile:       stateFile + ".lock",
-		ProjectRoot:    filepath.Join(home, "ark"),
+		ArkHome:          arkHome,
+		ImageDir:         filepath.Join(arkHome, "image"),
+		ImageStateFile:   filepath.Join(arkHome, "image", "state.json"),
+		SocketsDir:       filepath.Join(arkHome, "sockets"),
+		CacheDir:         filepath.Join(arkHome, "cache"),
+		LogsDir:          filepath.Join(arkHome, "logs"),
+		DevcontainersDir: filepath.Join(arkHome, "devcontainers"),
+		ConfigFile:       filepath.Join(arkHome, "config.toml"),
+		StateFile:        stateFile,
+		LockFile:         stateFile + ".lock",
+		ProjectRoot:      filepath.Join(home, "ark"),
 	}, nil
 }
 
@@ -60,6 +62,7 @@ func (p Paths) EnsureControlPlane() error {
 		p.SocketsDir,
 		p.CacheDir,
 		p.LogsDir,
+		p.DevcontainersDir,
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -74,6 +77,14 @@ func (p Paths) EnsureConfigDir() error {
 		return fmt.Errorf("create config directory %s: %w", filepath.Dir(p.ConfigFile), err)
 	}
 	return nil
+}
+
+// ArkOwnedDevcontainerPath returns the path to the ark-owned devcontainer
+// file for a project. Used by `ark devcontainer write` for inspection.
+// It is NOT used during `ark edit` — native mode writes into the project,
+// attach mode doesn't write a devcontainer file at all.
+func (p Paths) ArkOwnedDevcontainerPath(project Project) string {
+	return filepath.Join(p.DevcontainersDir, project.ID, "devcontainer.json")
 }
 
 func (p Paths) ProjectSocketDir(project Project) string {
@@ -125,6 +136,18 @@ func DirExistsNonEmpty(path string) (bool, error) {
 		return false, fmt.Errorf("read directory %s: %w", path, err)
 	}
 	return len(entries) > 0, nil
+}
+
+func mkdirAllWithMode(path string, perm os.FileMode) error {
+	if _, err := os.Stat(path); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	if err := os.MkdirAll(path, perm); err != nil {
+		return err
+	}
+	return os.Chmod(path, perm)
 }
 
 func atomicWriteFile(path string, data []byte, perm os.FileMode) error {

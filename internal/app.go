@@ -2,7 +2,9 @@ package internal
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -43,6 +45,12 @@ type PortOptions struct {
 	Specs     []string
 	Clear     bool
 	List      bool
+}
+
+type EditOptions struct {
+	EditorOverride string
+	Folder         string
+	Ports          PortOptions
 }
 
 func normalizePortOptions(ports PortOptions) (PortOptions, error) {
@@ -256,6 +264,255 @@ func (a *App) StartProject(ctx context.Context, name string, enter bool, ports P
 	}
 	fmt.Fprintf(a.out, "Started %s\n", name)
 	return nil
+}
+
+func (a *App) EditProject(ctx context.Context, name string, opts EditOptions) error {
+	ports, err := normalizePortOptions(opts.Ports)
+	if err != nil {
+		return err
+	}
+	if ports.List {
+		return errors.New("--ports cannot be combined with ark edit; use ark <name> --ports")
+	}
+
+	project, err := a.registry.Project(ctx, name)
+	if err != nil {
+		return err
+	}
+
+	rt, err := a.runtimeForProject(ctx, project)
+	if err != nil {
+		return err
+	}
+
+	project, err = a.applyRequestedPorts(ctx, rt, project, ports)
+	if err != nil {
+		return err
+	}
+
+	if err := a.touchProject(ctx, name); err != nil {
+		return err
+	}
+
+	editorName := opts.EditorOverride
+	if editorName == "" {
+		editorName = a.config.Editor.Default
+	}
+	if editorName == "" {
+		return errors.New("no editor configured; set [editor].default in ~/.ark/config.toml or pass --editor")
+	}
+
+	binary, err := ResolveEditorBinary(editorName)
+	if err != nil {
+		return err
+	}
+
+	switch EditorModeFor(editorName) {
+	case EditorModeAttach:
+		return a.editProjectAttach(ctx, rt, project, binary, opts)
+	case EditorModeDevcontainerNative:
+		return a.editProjectNative(ctx, rt, project, binary, opts)
+	default:
+		return fmt.Errorf("internal error: unknown editor mode for %q", editorName)
+	}
+}
+
+func (a *App) editProjectAttach(ctx context.Context, rt Runtime, project Project, binary string, opts EditOptions) error {
+	if err := a.ensureStarted(ctx, rt, project); err != nil {
+		return err
+	}
+
+	folder := resolveContainerFolder(opts.Folder, a.config.Container.Workdir)
+	remote := BuildRemoteAuthority(project.ContainerName)
+
+	if err := launchEditor(binary, remote, folder); err != nil {
+		return err
+	}
+
+	if folder != a.config.Container.Workdir {
+		fmt.Fprintf(a.out, "Opening %s (%s) in %s...\n", project.Name, folder, filepath.Base(binary))
+	} else {
+		fmt.Fprintf(a.out, "Opening %s in %s...\n", project.Name, filepath.Base(binary))
+	}
+	if err := a.printDynamicPortsIfAny(ctx, rt, project); err != nil {
+		fmt.Fprintf(a.errOut, "ark: could not read live ports: %v\n", err)
+	}
+	return nil
+}
+
+func (a *App) editProjectNative(ctx context.Context, rt Runtime, project Project, binary string, opts EditOptions) error {
+	workspaceFolder, err := resolveNativeWorkspaceFolder(opts.Folder, a.config.Container.Workdir)
+	if err != nil {
+		return err
+	}
+
+	devcontainerPath := filepath.Join(project.Path, ".devcontainer", "devcontainer.json")
+
+	if err := assertSafeToWriteDevcontainer(devcontainerPath); err != nil {
+		return err
+	}
+
+	imageInfo, err := a.ensureBaseImage(ctx, rt, project.Runtime)
+	if err != nil {
+		return err
+	}
+
+	if err := mkdirAllWithMode(filepath.Dir(devcontainerPath), 0o755); err != nil {
+		return fmt.Errorf("create .devcontainer directory: %w", err)
+	}
+
+	data, err := BuildDevcontainer(project, a.config, DevcontainerRenderOptions{
+		ImageTag:         imageInfo.Tag,
+		ImageFingerprint: imageInfo.Fingerprint,
+		ArkVersion:       ArkVersion,
+		WorkspaceFolder:  workspaceFolder,
+	})
+	if err != nil {
+		return err
+	}
+	if err := atomicWriteFile(devcontainerPath, data, 0o644); err != nil {
+		return err
+	}
+
+	if err := addToGitLocalExclude(project.Path, ".devcontainer/devcontainer.json"); err != nil {
+		// Non-fatal: the user may not be in a Git repo, or the exclude
+		// file may not be writable. Surface the warning, continue.
+		fmt.Fprintf(a.errOut, "ark: could not update .git/info/exclude: %v\n", err)
+	}
+
+	if err := launchEditorPath(binary, project.Path); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.out, "Opening %s in %s...\n", project.Name, filepath.Base(binary))
+	fmt.Fprintln(a.out, `(click "Reopen in Container" if the editor prompts)`)
+	return nil
+}
+
+func (a *App) DevcontainerWrite(ctx context.Context, name string, inProject bool) error {
+	project, rt, err := a.projectRuntime(ctx, name)
+	if err != nil {
+		return err
+	}
+
+	var target string
+	if inProject {
+		target = filepath.Join(project.Path, ".devcontainer", "devcontainer.json")
+		if err := assertSafeToWriteDevcontainer(target); err != nil {
+			return err
+		}
+	} else {
+		target = a.paths.ArkOwnedDevcontainerPath(project)
+	}
+
+	imageInfo, err := a.ensureBaseImage(ctx, rt, project.Runtime)
+	if err != nil {
+		return err
+	}
+
+	dirPerm := os.FileMode(0o700)
+	filePerm := os.FileMode(0o600)
+	if inProject {
+		dirPerm = 0o755
+		filePerm = 0o644
+	}
+	if err := mkdirAllWithMode(filepath.Dir(target), dirPerm); err != nil {
+		return fmt.Errorf("create directory: %w", err)
+	}
+
+	data, err := BuildDevcontainer(project, a.config, DevcontainerRenderOptions{
+		ImageTag:         imageInfo.Tag,
+		ImageFingerprint: imageInfo.Fingerprint,
+		ArkVersion:       ArkVersion,
+	})
+	if err != nil {
+		return err
+	}
+	if err := atomicWriteFile(target, data, filePerm); err != nil {
+		return err
+	}
+
+	if inProject {
+		if err := addToGitLocalExclude(project.Path, ".devcontainer/devcontainer.json"); err != nil {
+			fmt.Fprintf(a.errOut, "ark: could not update .git/info/exclude: %v\n", err)
+		}
+	}
+
+	fmt.Fprintf(a.out, "Wrote %s\n", target)
+	return nil
+}
+
+// assertSafeToWriteDevcontainer refuses to overwrite an existing
+// devcontainer.json unless ark previously generated it. The marker
+// lives in customizations.ark.generated.
+func assertSafeToWriteDevcontainer(path string) error {
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read existing devcontainer.json: %w", err)
+	}
+	var parsed struct {
+		Customizations struct {
+			Ark struct {
+				Generated bool `json:"generated"`
+			} `json:"ark"`
+		} `json:"customizations"`
+	}
+	if jsonErr := json.Unmarshal(data, &parsed); jsonErr == nil && parsed.Customizations.Ark.Generated {
+		return nil
+	}
+	return fmt.Errorf(
+		"refusing to overwrite existing %s\n"+
+			"ark didn't create this file. Move or rename it, then try again.",
+		path,
+	)
+}
+
+// addToGitLocalExclude appends an entry to <repo>/.git/info/exclude if
+// the file exists and the entry isn't already present. This is the local
+// per-clone ignore mechanism, distinct from the repo's tracked .gitignore
+// — appropriate for machine-generated files like ark's devcontainer.
+func addToGitLocalExclude(projectPath, entry string) error {
+	excludePath := filepath.Join(projectPath, ".git", "info", "exclude")
+	info, err := os.Stat(excludePath)
+	if errors.Is(err, os.ErrNotExist) {
+		// No git repo (or no info/exclude). Skip silently.
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("stat %s: %w", excludePath, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("%s is a directory", excludePath)
+	}
+
+	data, err := os.ReadFile(excludePath)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", excludePath, err)
+	}
+	if entryAlreadyPresent(data, entry) {
+		return nil
+	}
+
+	// Append with a leading newline if needed.
+	var buf bytes.Buffer
+	buf.Write(data)
+	if len(data) > 0 && data[len(data)-1] != '\n' {
+		buf.WriteByte('\n')
+	}
+	buf.WriteString(entry)
+	buf.WriteByte('\n')
+	return atomicWriteFile(excludePath, buf.Bytes(), 0o644)
+}
+
+func entryAlreadyPresent(data []byte, entry string) bool {
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if string(bytes.TrimSpace(line)) == entry {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *App) StopProject(ctx context.Context, name string) error {

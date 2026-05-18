@@ -38,6 +38,45 @@ ark -v
 
 ---
 
+## Building from Source
+
+Clone and build:
+
+```sh
+git clone https://github.com/Dave-lab12/ark.git
+cd ark
+go build -o ark ./cmd/ark
+```
+
+Run the local build:
+
+```sh
+./ark -v
+./ark init testapp
+./ark testapp
+```
+
+Run tests:
+
+```sh
+go test ./...
+```
+
+Run with race detector and vet during development:
+
+```sh
+go test -race ./...
+go vet ./...
+```
+
+To install the local build to your PATH, either copy it manually or use `go install` from inside the clone:
+
+```sh
+go install ./cmd/ark
+```
+
+---
+
 ## Quick Start
 
 ```sh
@@ -59,6 +98,8 @@ ark rm myapp -f                   # delete a project
 | `ark init <name>` | Create a new project |
 | `ark <name>` | Enter a project shell |
 | `ark <name> <cmd...>` | Run a command in a project |
+| `ark edit <name>` | Open a project in your editor |
+| `ark devcontainer write <name>` | Generate the devcontainer.json for a project |
 | `ark start <name>` | Start a stopped project |
 | `ark stop <name>` | Stop a running project |
 | `ark rm <name> -f` | Delete a project and its volumes |
@@ -131,6 +172,9 @@ hosts = ["github.com", "gitlab.com", "bitbucket.org", "ssh.dev.azure.com"]
 enabled = true
 data_root = "/var/lib/docker"
 start_dockerd = true
+
+[editor]
+default = "code"
 ```
 
 Ark embeds its default base image in the binary and syncs it to `~/.ark/image`. To use a custom base image, point `[image].source` at your own directory containing a `Containerfile`, `ark-entrypoint`, and `ark-ssh`.
@@ -169,6 +213,80 @@ Each comma-separated token is independent — `--port -3000,3001` means "remove 
 > **Common gotcha:** servers inside the container must bind to `0.0.0.0` (not `127.0.0.1`) or port forwarding won't reach them.
 
 Changing ports recreates the container. Your `/work` and volume data are always preserved. You'll be asked to confirm the first time per project; subsequent changes proceed automatically.
+
+---
+
+## Opening in an Editor
+
+`ark edit` connects your editor to the project's container. The flow
+depends on the editor:
+
+**VS Code, Cursor, code-insiders** — ark manages the container directly
+and attaches the editor with `--remote attached-container+<hex>`. Your
+project directory is untouched.
+
+**Everything else** (Zed, Windsurf, Antigravity, others) — ark writes a
+`.devcontainer/devcontainer.json` into the project's `.devcontainer/`
+directory and opens the editor at the project root. The editor's own
+"Reopen in Container" flow takes over.
+
+```sh
+ark edit myapp                       # uses your default editor
+ark edit myapp --editor cursor       # override the editor
+ark edit myapp --folder packages/api # open a subdirectory
+```
+
+Set your default editor in `~/.ark/config.toml`:
+
+```toml
+[editor]
+default = "code"
+```
+
+### Native-mode editors need `@devcontainers/cli`
+
+Editors in the "everything else" category typically require the
+devcontainer CLI to be installed on your host:
+
+```sh
+npm install -g @devcontainers/cli
+```
+
+Ark does not invoke this CLI itself — your editor does. If your editor
+reports "devcontainer not found," that's why.
+
+VS Code and Cursor do not need it (they use ark's direct container).
+
+### Generating without launching
+
+To produce the devcontainer.json without opening an editor:
+
+```sh
+ark devcontainer write myapp                # writes to ~/.ark/devcontainers/
+ark devcontainer write myapp --in-project   # writes to <project>/.devcontainer/
+```
+
+Useful for inspection or scripting. The `--in-project` form is also what
+`ark edit` does internally for native-mode editors.
+
+### Existing devcontainer.json in your project
+
+If your project already has a `.devcontainer/devcontainer.json` that ark
+didn't generate, ark refuses to overwrite it. Move or rename it, then
+try again. Ark detects its own files via a `customizations.ark.generated`
+marker; user-authored files are always safe.
+
+For native-mode usage, ark also adds `.devcontainer/devcontainer.json`
+to `.git/info/exclude` (the local per-clone ignore), so the generated
+file doesn't appear in `git status`. Your tracked `.gitignore` is not
+modified.
+
+### Native desktop AI apps
+
+Claude Code Mac app, Codex Mac app, ChatGPT desktop, and similar GUI
+apps run on your host, not in the container. They are outside ark's
+sandbox. For sandboxed AI workflows, run the agent's CLI inside
+`ark <name>` or use the editor extension via `ark edit`.
 
 ---
 
