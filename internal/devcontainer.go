@@ -14,7 +14,6 @@ type generatedDevcontainer struct {
 	WorkspaceFolder string            `json:"workspaceFolder"`
 	WorkspaceMount  string            `json:"workspaceMount"`
 	RemoteUser      string            `json:"remoteUser"`
-	ContainerUser   string            `json:"containerUser"`
 	OverrideCommand bool              `json:"overrideCommand"`
 	Privileged      bool              `json:"privileged"`
 	Mounts          []string          `json:"mounts,omitempty"`
@@ -60,8 +59,7 @@ func BuildDevcontainer(project Project, config Config, opts DevcontainerRenderOp
 			"source=${localWorkspaceFolder},target=%s,type=bind,consistency=cached",
 			config.Container.Workdir,
 		),
-		RemoteUser:    config.Container.User,
-		ContainerUser: config.Container.User,
+		RemoteUser: config.Container.User,
 		// The spec defaults overrideCommand to true for image-based
 		// configs, which would replace ark's entrypoint with a sleep
 		// loop. We explicitly set false so ark-entrypoint runs and

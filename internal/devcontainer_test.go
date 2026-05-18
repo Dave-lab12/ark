@@ -22,6 +22,12 @@ func TestBuildDevcontainerBasicProject(t *testing.T) {
 	if got["workspaceFolder"] != config.Container.Workdir {
 		t.Fatalf("workspaceFolder = %v, want %s", got["workspaceFolder"], config.Container.Workdir)
 	}
+	if got["remoteUser"] != config.Container.User {
+		t.Fatalf("remoteUser = %v, want %s", got["remoteUser"], config.Container.User)
+	}
+	if _, ok := got["containerUser"]; ok {
+		t.Fatalf("containerUser should be omitted so the image entrypoint starts as the image default user")
+	}
 	mount, ok := got["workspaceMount"].(string)
 	if !ok || !strings.Contains(mount, "${localWorkspaceFolder}") {
 		t.Fatalf("workspaceMount = %v, want local workspace folder variable", got["workspaceMount"])
