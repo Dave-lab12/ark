@@ -1,4 +1,4 @@
-package internal
+package image
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/Dave-lab12/ark/internal/paths"
 	"github.com/gofrs/flock"
 )
 
@@ -122,5 +123,5 @@ func (s *ImageStore) writeUnlocked(state *ImageState) error {
 		return fmt.Errorf("encode image state: %w", err)
 	}
 	data = append(data, '\n')
-	return atomicWriteFile(s.paths.ImageStateFile, data, 0o600)
+	return paths.AtomicWriteFile(s.paths.ImageStateFile, data, 0o600)
 }

@@ -1,4 +1,4 @@
-package internal
+package config
 
 import (
 	"errors"
@@ -9,6 +9,9 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/Dave-lab12/ark/internal/core"
+	"github.com/Dave-lab12/ark/internal/defaults"
+	"github.com/Dave-lab12/ark/internal/paths"
 )
 
 type Config struct {
@@ -62,7 +65,7 @@ type EditorConfig struct {
 func DefaultConfig() Config {
 	return Config{
 		Version:     1,
-		Runtime:     RuntimeAuto,
+		Runtime:     core.RuntimeAuto,
 		ProjectRoot: "~/ark",
 		Init: InitConfig{
 			SSH:    true,
@@ -70,7 +73,7 @@ func DefaultConfig() Config {
 			Enter:  true,
 		},
 		Image: ImageConfig{
-			Tag:         DefaultImageTag,
+			Tag:         core.DefaultImageTag,
 			Source:      "~/.ark/image",
 			AutoBuild:   true,
 			AutoRebuild: false,
@@ -83,8 +86,8 @@ func DefaultConfig() Config {
 		},
 		Git: GitConfig{
 			Enabled:      true,
-			BrokerSocket: DefaultBrokerSocketPath,
-			Hosts:        append([]string(nil), DefaultAllowedGitHosts...),
+			BrokerSocket: defaults.DefaultBrokerSocketPath,
+			Hosts:        append([]string(nil), defaults.DefaultAllowedGitHosts...),
 		},
 		Docker: DockerConfig{
 			Enabled:      true,
@@ -97,29 +100,29 @@ func DefaultConfig() Config {
 	}
 }
 
-func EnsureDefaultConfig(paths Paths) error {
-	if err := paths.EnsureConfigDir(); err != nil {
+func EnsureDefaultConfig(p paths.Paths) error {
+	if err := p.EnsureConfigDir(); err != nil {
 		return err
 	}
-	if _, err := os.Stat(paths.ConfigFile); err == nil {
+	if _, err := os.Stat(p.ConfigFile); err == nil {
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("stat config file %s: %w", paths.ConfigFile, err)
+		return fmt.Errorf("stat config file %s: %w", p.ConfigFile, err)
 	}
-	return atomicWriteFile(paths.ConfigFile, []byte(defaultConfigTOML), 0o600)
+	return paths.AtomicWriteFile(p.ConfigFile, []byte(defaultConfigTOML), 0o600)
 }
 
-func LoadConfig(paths Paths) (Config, error) {
+func LoadConfig(p paths.Paths) (Config, error) {
 	config := DefaultConfig()
-	data, err := os.ReadFile(paths.ConfigFile)
+	data, err := os.ReadFile(p.ConfigFile)
 	if errors.Is(err, os.ErrNotExist) {
 		return config, nil
 	}
 	if err != nil {
-		return Config{}, fmt.Errorf("read config file %s: %w", paths.ConfigFile, err)
+		return Config{}, fmt.Errorf("read config file %s: %w", p.ConfigFile, err)
 	}
 	if _, err := toml.Decode(string(data), &config); err != nil {
-		return Config{}, fmt.Errorf("parse config file %s: %w", paths.ConfigFile, err)
+		return Config{}, fmt.Errorf("parse config file %s: %w", p.ConfigFile, err)
 	}
 	if err := config.normalize(); err != nil {
 		return Config{}, err
@@ -168,7 +171,7 @@ func (c *Config) normalize() error {
 	if strings.TrimSpace(c.Editor.Default) == "" {
 		c.Editor.Default = defaults.Editor.Default
 	}
-	if c.Runtime != RuntimeAuto && c.Runtime != RuntimeDocker && c.Runtime != RuntimeApple {
+	if c.Runtime != core.RuntimeAuto && c.Runtime != core.RuntimeDocker && c.Runtime != core.RuntimeApple {
 		return fmt.Errorf("config runtime must be auto, docker, or apple")
 	}
 	return nil
@@ -182,35 +185,43 @@ func (c Config) ImageSourcePath() (string, error) {
 	return expandPath(c.Image.Source)
 }
 
-func (c Config) BuildImageSpec(out, errOut io.Writer) (BuildImageSpec, error) {
+func (c Config) UsesDefaultImageSource(source string) bool {
+	defaultSource, err := DefaultConfig().ImageSourcePath()
+	if err != nil {
+		return strings.TrimSpace(c.Image.Source) == DefaultConfig().Image.Source
+	}
+	return filepath.Clean(source) == filepath.Clean(defaultSource)
+}
+
+func (c Config) BuildImageSpec(out, errOut io.Writer) (core.BuildImageSpec, error) {
 	source, err := c.ImageSourcePath()
 	if err != nil {
-		return BuildImageSpec{}, err
+		return core.BuildImageSpec{}, err
 	}
-	return BuildImageSpec{
+	return core.BuildImageSpec{
 		ContextDir: source,
 		Dockerfile: "Containerfile",
 		Tag:        c.Image.Tag,
 		BuildArgs: map[string]string{
-			"ARK_BASE_IMAGE": DefaultParentImage,
+			"ARK_BASE_IMAGE": core.DefaultParentImage,
 		},
 		Out: out,
 		Err: errOut,
 	}, nil
 }
 
-func WriteDefaultConfig(paths Paths, force bool) error {
-	if err := paths.EnsureConfigDir(); err != nil {
+func WriteDefaultConfig(p paths.Paths, force bool) error {
+	if err := p.EnsureConfigDir(); err != nil {
 		return err
 	}
 	if !force {
-		if _, err := os.Stat(paths.ConfigFile); err == nil {
-			return fmt.Errorf("config file already exists: %s", paths.ConfigFile)
+		if _, err := os.Stat(p.ConfigFile); err == nil {
+			return fmt.Errorf("config file already exists: %s", p.ConfigFile)
 		} else if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("stat config file %s: %w", paths.ConfigFile, err)
+			return fmt.Errorf("stat config file %s: %w", p.ConfigFile, err)
 		}
 	}
-	return atomicWriteFile(paths.ConfigFile, []byte(defaultConfigTOML), 0o600)
+	return paths.AtomicWriteFile(p.ConfigFile, []byte(defaultConfigTOML), 0o600)
 }
 
 func expandPath(path string) (string, error) {

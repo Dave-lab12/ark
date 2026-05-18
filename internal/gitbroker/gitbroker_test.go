@@ -1,4 +1,4 @@
-package internal
+package gitbroker
 
 import (
 	"bufio"
@@ -12,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Dave-lab12/ark/internal/defaults"
 )
 
 // dialUnix opens a unix-socket connection to the broker.
@@ -58,11 +60,11 @@ func encodeRequest(t *testing.T, token string, req GitBrokerRequest) []byte {
 // startTestBroker boots a broker with a captured stderr and returns it along
 // with the buffer so tests can inspect the error stream.
 //
-// We mkdtemp in /tmp rather than using t.TempDir() because macOS limits
+// We mkdtemp in a short temp root rather than using t.TempDir() because macOS limits
 // sun_path to 104 chars and the default temp dir blows past that.
 func startTestBroker(t *testing.T) (*GitBroker, *bytes.Buffer) {
 	t.Helper()
-	dir, err := os.MkdirTemp("/tmp", "ark-broker-")
+	dir, err := os.MkdirTemp(shortSocketTempRoot(), "ark-broker-")
 	if err != nil {
 		t.Fatalf("mkdtemp: %v", err)
 	}
@@ -71,8 +73,11 @@ func startTestBroker(t *testing.T) (*GitBroker, *bytes.Buffer) {
 	var errBuf bytes.Buffer
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	broker, err := StartGitBroker(ctx, sockPath, DefaultAllowedGitHosts, &errBuf)
+	broker, err := StartGitBroker(ctx, sockPath, defaults.DefaultAllowedGitHosts, &errBuf)
 	if err != nil {
+		if strings.Contains(err.Error(), "bind: operation not permitted") {
+			t.Skipf("unix sockets are not permitted in this sandbox: %v", err)
+		}
 		t.Fatalf("StartGitBroker: %v", err)
 	}
 	t.Cleanup(func() { _ = broker.Close() })
@@ -80,6 +85,13 @@ func startTestBroker(t *testing.T) (*GitBroker, *bytes.Buffer) {
 		t.Fatal("broker did not generate a token")
 	}
 	return broker, &errBuf
+}
+
+func shortSocketTempRoot() string {
+	if _, err := os.Stat("/private/tmp"); err == nil {
+		return "/private/tmp"
+	}
+	return "/tmp"
 }
 
 // validRequest is a request that will pass parseGitSSHRequest and

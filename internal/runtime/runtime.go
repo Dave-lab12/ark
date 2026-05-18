@@ -1,8 +1,10 @@
-package internal
+package runtime
 
 import (
 	"context"
 	"fmt"
+
+	"github.com/Dave-lab12/ark/internal/core"
 )
 
 type Runtime interface {
@@ -29,12 +31,12 @@ func ResolveRuntime(ctx context.Context, requested string) (Runtime, string, err
 		requested = RuntimeAuto
 	}
 	switch requested {
-	case RuntimeDocker:
+	case core.RuntimeDocker:
 		rt, err := NewDockerRuntime()
-		return rt, RuntimeDocker, err
-	case RuntimeApple:
-		return NewAppleRuntime(), RuntimeApple, nil
-	case RuntimeAuto:
+		return rt, core.RuntimeDocker, err
+	case core.RuntimeApple:
+		return NewAppleRuntime(), core.RuntimeApple, nil
+	case core.RuntimeAuto:
 		return resolveAutoRuntime(ctx)
 	default:
 		return nil, "", fmt.Errorf("unknown runtime %q", requested)
@@ -43,9 +45,9 @@ func ResolveRuntime(ctx context.Context, requested string) (Runtime, string, err
 
 func RuntimeByName(name string) (Runtime, error) {
 	switch name {
-	case RuntimeDocker:
+	case core.RuntimeDocker:
 		return NewDockerRuntime()
-	case RuntimeApple:
+	case core.RuntimeApple:
 		return NewAppleRuntime(), nil
 	default:
 		return nil, fmt.Errorf("unknown stored runtime %q", name)
@@ -62,5 +64,5 @@ func resolveAutoRuntime(ctx context.Context) (Runtime, string, error) {
 	if err := rt.Available(ctx); err != nil {
 		return nil, "", fmt.Errorf("auto runtime could not find Docker: %w", err)
 	}
-	return rt, RuntimeDocker, nil
+	return rt, core.RuntimeDocker, nil
 }

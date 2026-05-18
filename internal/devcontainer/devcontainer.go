@@ -1,4 +1,4 @@
-package internal
+package devcontainer
 
 import (
 	"encoding/json"

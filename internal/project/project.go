@@ -1,4 +1,4 @@
-package internal
+package project
 
 import (
 	"crypto/rand"
@@ -101,7 +101,7 @@ func ProjectMounts(project Project) []MountSpec {
 	return mounts
 }
 
-func appendProjectControlPlaneMounts(mounts []MountSpec, paths Paths, project Project) []MountSpec {
+func AppendProjectControlPlaneMounts(mounts []MountSpec, paths Paths, project Project) []MountSpec {
 	if project.SSHEnabled {
 		mounts = append(mounts, MountSpec{
 			Type:   MountTypeBind,
@@ -112,7 +112,7 @@ func appendProjectControlPlaneMounts(mounts []MountSpec, paths Paths, project Pr
 	return mounts
 }
 
-func ensureProjectControlPlane(paths Paths, project Project) error {
+func EnsureProjectControlPlane(paths Paths, project Project) error {
 	if project.SSHEnabled {
 		if err := os.MkdirAll(paths.ProjectSocketDir(project), 0o700); err != nil {
 			return fmt.Errorf("create project socket directory: %w", err)
@@ -121,7 +121,7 @@ func ensureProjectControlPlane(paths Paths, project Project) error {
 	return nil
 }
 
-func projectVolumeNames(project Project) []string {
+func ProjectVolumeNames(project Project) []string {
 	names := []string{
 		project.Volumes.Home,
 		project.Volumes.Cache,
