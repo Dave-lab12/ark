@@ -1,4 +1,4 @@
-package internal
+package devcontainer
 
 import (
 	"bytes"
@@ -298,4 +298,16 @@ func assertMixedArray(t *testing.T, got map[string]any, key string, want []any) 
 			t.Fatalf("%s[%d] = %#v, want %#v", key, i, item, want[i])
 		}
 	}
+}
+
+func mustPortMapping(t *testing.T, spec string) PortMapping {
+	t.Helper()
+	ports, err := ParsePortList([]string{spec})
+	if err != nil {
+		t.Fatalf("ParsePortList(%q): %v", spec, err)
+	}
+	if len(ports) != 1 {
+		t.Fatalf("ParsePortList(%q) returned %d ports", spec, len(ports))
+	}
+	return ports[0]
 }

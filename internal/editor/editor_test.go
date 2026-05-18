@@ -1,4 +1,4 @@
-package internal
+package editor
 
 import (
 	"encoding/hex"

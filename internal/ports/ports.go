@@ -1,4 +1,4 @@
-package internal
+package ports
 
 import (
 	"fmt"
@@ -11,7 +11,8 @@ import (
 const (
 	defaultPortHostIP  = "127.0.0.1"
 	defaultPortProto   = "tcp"
-	portRangeErrorText = "port ranges are not yet supported; list ports explicitly: --port 3000,3001,3002"
+	PortRangeErrorText = "port ranges are not yet supported; list ports explicitly: --port 3000,3001,3002"
+	portRangeErrorText = PortRangeErrorText
 )
 
 // PortChange represents the result of parsing user input against existing state.

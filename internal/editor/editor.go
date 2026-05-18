@@ -1,4 +1,4 @@
-package internal
+package editor
 
 import (
 	"encoding/hex"
@@ -141,7 +141,7 @@ func BuildRemoteAuthority(containerName string) string {
 // "--folder mindplex_backend" means "/work/mindplex_backend" when workdir
 // is "/work"). Path traversal is not blocked here — the container is the
 // trust boundary, not this validation.
-func resolveContainerFolder(folder, workdir string) string {
+func ResolveContainerFolder(folder, workdir string) string {
 	if folder == "" {
 		return workdir
 	}
@@ -154,7 +154,7 @@ func resolveContainerFolder(folder, workdir string) string {
 // resolveNativeWorkspaceFolder resolves --folder to the container path that
 // editor-owned devcontainers should open, while keeping the host editor launch
 // rooted at the project directory.
-func resolveNativeWorkspaceFolder(folder, workdir string) (string, error) {
+func ResolveNativeWorkspaceFolder(folder, workdir string) (string, error) {
 	workdir = path.Clean(strings.TrimSpace(workdir))
 	if !path.IsAbs(workdir) {
 		return "", fmt.Errorf("container workdir %q must be absolute", workdir)
@@ -185,7 +185,7 @@ func osStat(path string) (fs.FileInfo, error) {
 
 // launchEditor is the function used to start the editor process. It's a
 // var so tests can stub it without spawning a real GUI app.
-var launchEditor = launchEditorImpl
+var LaunchEditor = launchEditorImpl
 
 func launchEditorImpl(binary, remote, folder string) error {
 	cmd := exec.Command(binary, "--remote", remote, folder)
@@ -202,7 +202,7 @@ func launchEditorImpl(binary, remote, folder string) error {
 // authority. Used by devcontainer-native mode, where the editor finds
 // the in-project devcontainer.json itself and drives the container
 // connection.
-var launchEditorPath = launchEditorPathImpl
+var LaunchEditorPath = launchEditorPathImpl
 
 func launchEditorPathImpl(binary, path string) error {
 	cmd := exec.Command(binary, path)

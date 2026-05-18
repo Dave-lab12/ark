@@ -1,7 +1,6 @@
-package internal
+package image
 
 import (
-	"archive/tar"
 	"bytes"
 	"context"
 	"crypto/sha256"
@@ -14,10 +13,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
+
+	"github.com/Dave-lab12/ark/internal/paths"
 )
 
-//go:embed image_assets/Containerfile image_assets/ark-entrypoint image_assets/ark-ssh
+//go:embed assets/Containerfile assets/ark-entrypoint assets/ark-ssh
 var embeddedBaseImageFS embed.FS
 
 var fingerprintFiles = []string{
@@ -33,9 +33,9 @@ type embeddedImageAsset struct {
 }
 
 var embeddedImageAssets = []embeddedImageAsset{
-	{Name: "Containerfile", Path: "image_assets/Containerfile", Perm: 0o644},
-	{Name: "ark-entrypoint", Path: "image_assets/ark-entrypoint", Perm: 0o755},
-	{Name: "ark-ssh", Path: "image_assets/ark-ssh", Perm: 0o755},
+	{Name: "Containerfile", Path: "assets/Containerfile", Perm: 0o644},
+	{Name: "ark-entrypoint", Path: "assets/ark-entrypoint", Perm: 0o755},
+	{Name: "ark-ssh", Path: "assets/ark-ssh", Perm: 0o755},
 }
 
 func BuildBaseImage(ctx context.Context, rt Runtime, config Config, out, errOut io.Writer) error {
@@ -81,7 +81,7 @@ func EnsureImageSource(config Config) error {
 	if err := os.MkdirAll(source, 0o700); err != nil {
 		return fmt.Errorf("create image source directory %s: %w", source, err)
 	}
-	overwrite := config.usesDefaultImageSource(source)
+	overwrite := config.UsesDefaultImageSource(source)
 	for _, asset := range embeddedImageAssets {
 		dst := filepath.Join(source, asset.Name)
 		data, err := readEmbeddedImageAsset(asset)
@@ -106,7 +106,7 @@ func EnsureImageSource(config Config) error {
 				return fmt.Errorf("stat image source file %s: %w", dst, err)
 			}
 		}
-		if err := atomicWriteFile(dst, data, asset.Perm); err != nil {
+		if err := paths.AtomicWriteFile(dst, data, asset.Perm); err != nil {
 			return err
 		}
 	}
@@ -119,67 +119,4 @@ func readEmbeddedImageAsset(asset embeddedImageAsset) ([]byte, error) {
 		return nil, fmt.Errorf("read embedded image source %s: %w", asset.Path, err)
 	}
 	return data, nil
-}
-
-func (c Config) usesDefaultImageSource(source string) bool {
-	defaultSource, err := DefaultConfig().ImageSourcePath()
-	if err != nil {
-		return strings.TrimSpace(c.Image.Source) == DefaultConfig().Image.Source
-	}
-	return filepath.Clean(source) == filepath.Clean(defaultSource)
-}
-
-func tarDirectory(root string) (io.ReadCloser, error) {
-	info, err := os.Stat(root)
-	if err != nil {
-		return nil, fmt.Errorf("stat build context %s: %w", root, err)
-	}
-	if !info.IsDir() {
-		return nil, fmt.Errorf("build context is not a directory: %s", root)
-	}
-
-	pr, pw := io.Pipe()
-	go func() {
-		tw := tar.NewWriter(pw)
-		err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				return walkErr
-			}
-			if path == root {
-				return nil
-			}
-			info, err := entry.Info()
-			if err != nil {
-				return err
-			}
-			header, err := tar.FileInfoHeader(info, "")
-			if err != nil {
-				return err
-			}
-			rel, err := filepath.Rel(root, path)
-			if err != nil {
-				return err
-			}
-			header.Name = filepath.ToSlash(rel)
-			if err := tw.WriteHeader(header); err != nil {
-				return err
-			}
-			if entry.IsDir() {
-				return nil
-			}
-			file, err := os.Open(path)
-			if err != nil {
-				return err
-			}
-			defer file.Close()
-			_, err = io.Copy(tw, file)
-			return err
-		})
-		closeErr := tw.Close()
-		if err == nil {
-			err = closeErr
-		}
-		_ = pw.CloseWithError(err)
-	}()
-	return pr, nil
 }

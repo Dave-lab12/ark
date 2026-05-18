@@ -1,4 +1,4 @@
-package internal
+package paths
 
 import (
 	"errors"
@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/Dave-lab12/ark/internal/core"
 )
 
 type Paths struct {
@@ -83,11 +85,11 @@ func (p Paths) EnsureConfigDir() error {
 // file for a project. Used by `ark devcontainer write` for inspection.
 // It is NOT used during `ark edit` — native mode writes into the project,
 // attach mode doesn't write a devcontainer file at all.
-func (p Paths) ArkOwnedDevcontainerPath(project Project) string {
+func (p Paths) ArkOwnedDevcontainerPath(project core.Project) string {
 	return filepath.Join(p.DevcontainersDir, project.ID, "devcontainer.json")
 }
 
-func (p Paths) ProjectSocketDir(project Project) string {
+func (p Paths) ProjectSocketDir(project core.Project) string {
 	if project.ID == "" {
 		return filepath.Join(p.SocketsDir, project.Name)
 	}
@@ -138,7 +140,7 @@ func DirExistsNonEmpty(path string) (bool, error) {
 	return len(entries) > 0, nil
 }
 
-func mkdirAllWithMode(path string, perm os.FileMode) error {
+func MkdirAllWithMode(path string, perm os.FileMode) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -150,7 +152,7 @@ func mkdirAllWithMode(path string, perm os.FileMode) error {
 	return os.Chmod(path, perm)
 }
 
-func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+func AtomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create directory %s: %w", dir, err)

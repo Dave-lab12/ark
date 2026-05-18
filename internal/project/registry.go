@@ -1,4 +1,4 @@
-package internal
+package project
 
 import (
 	"context"
@@ -9,6 +9,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/Dave-lab12/ark/internal/paths"
 	"github.com/gofrs/flock"
 )
 
@@ -117,7 +118,7 @@ func (r *Registry) writeUnlocked(state *State) error {
 		return fmt.Errorf("encode state: %w", err)
 	}
 	data = append(data, '\n')
-	return atomicWriteFile(r.paths.StateFile, data, 0o600)
+	return paths.AtomicWriteFile(r.paths.StateFile, data, 0o600)
 }
 
 func (r *Registry) Project(ctx context.Context, name string) (Project, error) {
