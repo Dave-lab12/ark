@@ -40,12 +40,14 @@ func TestRootHelpShowsCommandGroups(t *testing.T) {
 		"ARK",
 		"INSIDE A PROJECT",
 		"init        create a project",
+		"edit        open a project in your editor",
 		"rebuild     recreate from the current base image",
 		"config      show or edit ark config",
 		"  path      print config file path",
 		"image       manage the base image",
 		"  status    show base image status",
 		"  rebuild   rebuild the reusable base image",
+		"devcontainer  manage devcontainer.json generation",
 		"doctor      check local setup",
 	} {
 		if !strings.Contains(got, want) {

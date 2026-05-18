@@ -365,16 +365,17 @@ func portTestPaths(root string) Paths {
 	arkHome := filepath.Join(root, ".ark")
 	stateFile := filepath.Join(arkHome, "state.json")
 	return Paths{
-		ArkHome:        arkHome,
-		ImageDir:       filepath.Join(arkHome, "image"),
-		ImageStateFile: filepath.Join(arkHome, "image", "state.json"),
-		SocketsDir:     filepath.Join(arkHome, "sockets"),
-		CacheDir:       filepath.Join(arkHome, "cache"),
-		LogsDir:        filepath.Join(arkHome, "logs"),
-		ConfigFile:     filepath.Join(arkHome, "config.toml"),
-		StateFile:      stateFile,
-		LockFile:       stateFile + ".lock",
-		ProjectRoot:    filepath.Join(root, "projects"),
+		ArkHome:          arkHome,
+		ImageDir:         filepath.Join(arkHome, "image"),
+		ImageStateFile:   filepath.Join(arkHome, "image", "state.json"),
+		SocketsDir:       filepath.Join(arkHome, "sockets"),
+		CacheDir:         filepath.Join(arkHome, "cache"),
+		LogsDir:          filepath.Join(arkHome, "logs"),
+		DevcontainersDir: filepath.Join(arkHome, "devcontainers"),
+		ConfigFile:       filepath.Join(arkHome, "config.toml"),
+		StateFile:        stateFile,
+		LockFile:         stateFile + ".lock",
+		ProjectRoot:      filepath.Join(root, "projects"),
 	}
 }
 

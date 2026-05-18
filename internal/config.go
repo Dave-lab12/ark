@@ -20,6 +20,7 @@ type Config struct {
 	Container   ContainerConfig `toml:"container"`
 	Git         GitConfig       `toml:"git"`
 	Docker      DockerConfig    `toml:"docker"`
+	Editor      EditorConfig    `toml:"editor"`
 }
 
 type InitConfig struct {
@@ -54,6 +55,10 @@ type DockerConfig struct {
 	StartDockerd bool   `toml:"start_dockerd"`
 }
 
+type EditorConfig struct {
+	Default string `toml:"default"`
+}
+
 func DefaultConfig() Config {
 	return Config{
 		Version:     1,
@@ -85,6 +90,9 @@ func DefaultConfig() Config {
 			Enabled:      true,
 			DataRoot:     "/var/lib/docker",
 			StartDockerd: true,
+		},
+		Editor: EditorConfig{
+			Default: "code",
 		},
 	}
 }
@@ -156,6 +164,9 @@ func (c *Config) normalize() error {
 	}
 	if strings.TrimSpace(c.Docker.DataRoot) == "" {
 		c.Docker.DataRoot = defaults.Docker.DataRoot
+	}
+	if strings.TrimSpace(c.Editor.Default) == "" {
+		c.Editor.Default = defaults.Editor.Default
 	}
 	if c.Runtime != RuntimeAuto && c.Runtime != RuntimeDocker && c.Runtime != RuntimeApple {
 		return fmt.Errorf("config runtime must be auto, docker, or apple")
@@ -250,4 +261,7 @@ hosts = ["github.com", "gitlab.com", "bitbucket.org", "ssh.dev.azure.com"]
 enabled = true
 data_root = "/var/lib/docker"
 start_dockerd = true
+
+[editor]
+default = "code"
 `
