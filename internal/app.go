@@ -250,6 +250,9 @@ func (a *App) StartProject(ctx context.Context, name string, enter bool, ports P
 	if err := a.warnProjectImageStale(ctx, project); err != nil {
 		return err
 	}
+	if err := a.ensureStarted(ctx, rt, project); err != nil {
+		return err
+	}
 	if err := a.touchProject(ctx, name); err != nil {
 		return err
 	}

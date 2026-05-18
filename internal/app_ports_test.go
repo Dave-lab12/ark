@@ -68,6 +68,34 @@ func TestRunProjectPortChangeStoppedRecreatesWithoutConfirmation(t *testing.T) {
 	}
 }
 
+func TestStartProjectStartsBeforeDynamicPortsAndEnter(t *testing.T) {
+	ctx := context.Background()
+	project := testProject(t, []PortMapping{mustPortMapping(t, "0:3000")}, false)
+	rt := &fakePortRuntime{
+		inspectResults: []*Container{
+			{Running: false, Status: "exited"},
+			{
+				Running: true,
+				Status:  "running",
+				Ports:   []PortMapping{mustPortMapping(t, "49152:3000")},
+			},
+		},
+	}
+	app, out, _ := newPortTestApp(t, "", project, rt)
+
+	if err := app.StartProject(ctx, project.Name, true, PortOptions{}); err != nil {
+		t.Fatalf("StartProject: %v", err)
+	}
+
+	wantCalls := []string{"Inspect", "Start", "Inspect", "Exec"}
+	if !reflect.DeepEqual(rt.calls, wantCalls) {
+		t.Fatalf("calls mismatch:\n got: %v\nwant: %v", rt.calls, wantCalls)
+	}
+	if got := out.String(); !strings.Contains(got, "Forwarded:") || !strings.Contains(got, "49152:3000") {
+		t.Fatalf("dynamic ports were not printed after start:\n%s", got)
+	}
+}
+
 func TestRunProjectPortChangeNoopDoesNotRecreate(t *testing.T) {
 	ctx := context.Background()
 	port3000 := mustPortMapping(t, "3000")
