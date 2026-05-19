@@ -21,6 +21,7 @@ type Config struct {
 	Init        InitConfig      `toml:"init"`
 	Image       ImageConfig     `toml:"image"`
 	Container   ContainerConfig `toml:"container"`
+	Mounts      MountsConfig    `toml:"mounts"`
 	Git         GitConfig       `toml:"git"`
 	Docker      DockerConfig    `toml:"docker"`
 	Editor      EditorConfig    `toml:"editor"`
@@ -44,6 +45,11 @@ type ContainerConfig struct {
 	Workdir    string `toml:"workdir"`
 	Shell      string `toml:"shell"`
 	Privileged bool   `toml:"privileged"`
+}
+
+type MountsConfig struct {
+	Neovim string `toml:"neovim"`
+	Tmux   string `toml:"tmux"`
 }
 
 type GitConfig struct {
@@ -210,6 +216,68 @@ func (c Config) BuildImageSpec(out, errOut io.Writer) (core.BuildImageSpec, erro
 	}, nil
 }
 
+func (c Config) ReadOnlyConfigMounts() ([]core.MountSpec, error) {
+	mounts := make([]core.MountSpec, 0, 2)
+	if strings.TrimSpace(c.Mounts.Neovim) != "" {
+		mount, err := c.readOnlyConfigMount(c.Mounts.Neovim, "/home/dev/.config/nvim", true, "nvim")
+		if err != nil {
+			return nil, fmt.Errorf("mounts.neovim: %w", err)
+		}
+		mounts = append(mounts, mount)
+	}
+	if strings.TrimSpace(c.Mounts.Tmux) != "" {
+		mount, err := c.readOnlyConfigMount(c.Mounts.Tmux, "/home/dev/.tmux.conf", false, ".tmux.conf", "tmux.conf")
+		if err != nil {
+			return nil, fmt.Errorf("mounts.tmux: %w", err)
+		}
+		mounts = append(mounts, mount)
+	}
+	return mounts, nil
+}
+
+func (c Config) readOnlyConfigMount(sourcePath, target string, wantDir bool, allowedBaseNames ...string) (core.MountSpec, error) {
+	source, err := expandPath(sourcePath)
+	if err != nil {
+		return core.MountSpec{}, err
+	}
+	info, err := os.Stat(source)
+	if err != nil {
+		return core.MountSpec{}, fmt.Errorf("stat source %s: %w", source, err)
+	}
+	if wantDir && !info.IsDir() {
+		return core.MountSpec{}, fmt.Errorf("source %s must be a directory", source)
+	}
+	if !wantDir && !info.Mode().IsRegular() {
+		return core.MountSpec{}, fmt.Errorf("source %s must be a regular file", source)
+	}
+	if !hasAllowedBaseName(source, allowedBaseNames) {
+		return core.MountSpec{}, fmt.Errorf(
+			"source %s must end with one of %q",
+			source,
+			allowedBaseNames,
+		)
+	}
+	if !strings.HasPrefix(filepath.Clean(target), "/home/dev/") {
+		return core.MountSpec{}, fmt.Errorf("target %s must stay under /home/dev", target)
+	}
+	return core.MountSpec{
+		Type:     core.MountTypeBind,
+		Source:   source,
+		Target:   target,
+		ReadOnly: true,
+	}, nil
+}
+
+func hasAllowedBaseName(path string, allowed []string) bool {
+	base := filepath.Base(path)
+	for _, candidate := range allowed {
+		if base == candidate {
+			return true
+		}
+	}
+	return false
+}
+
 func WriteDefaultConfig(p paths.Paths, force bool) error {
 	if err := p.EnsureConfigDir(); err != nil {
 		return err
@@ -262,6 +330,10 @@ user = "dev"
 workdir = "/work"
 shell = "/bin/zsh"
 privileged = true
+
+[mounts]
+neovim = ""
+tmux = ""
 
 [git]
 enabled = true

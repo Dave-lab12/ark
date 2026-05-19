@@ -258,6 +258,12 @@ func (a *App) warnProjectImageStale(ctx context.Context, project Project) error 
 	return nil
 }
 
-func (a *App) projectMounts(project Project) []MountSpec {
-	return appendProjectControlPlaneMounts(ProjectMounts(project), a.paths, project)
+func (a *App) projectMounts(project Project) ([]MountSpec, error) {
+	mounts := append([]MountSpec(nil), ProjectMounts(project)...)
+	extraMounts, err := a.config.ReadOnlyConfigMounts()
+	if err != nil {
+		return nil, err
+	}
+	mounts = append(mounts, extraMounts...)
+	return appendProjectControlPlaneMounts(mounts, a.paths, project), nil
 }

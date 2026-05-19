@@ -684,7 +684,11 @@ func (a *App) runtimeForProject(ctx context.Context, project Project) (Runtime, 
 }
 
 func (a *App) createProjectContainer(ctx context.Context, rt Runtime, project Project) error {
-	_, err := rt.Create(ctx, CreateSpec{
+	mounts, err := a.projectMounts(project)
+	if err != nil {
+		return err
+	}
+	_, err = rt.Create(ctx, CreateSpec{
 		Name:          project.ContainerName,
 		Image:         project.Image,
 		ProjectName:   project.Name,
@@ -692,7 +696,7 @@ func (a *App) createProjectContainer(ctx context.Context, rt Runtime, project Pr
 		ProjectPath:   project.Path,
 		Workdir:       a.config.Container.Workdir,
 		Env:           ProjectEnv(project, a.config),
-		Mounts:        a.projectMounts(project),
+		Mounts:        mounts,
 		Ports:         project.Ports,
 		DockerEnabled: project.DockerEnabled,
 		Privileged:    a.config.Container.Privileged,
