@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 
@@ -21,6 +22,7 @@ type Config struct {
 	Init        InitConfig      `toml:"init"`
 	Image       ImageConfig     `toml:"image"`
 	Container   ContainerConfig `toml:"container"`
+	Mounts      MountsConfig    `toml:"mounts"`
 	Git         GitConfig       `toml:"git"`
 	Docker      DockerConfig    `toml:"docker"`
 	Editor      EditorConfig    `toml:"editor"`
@@ -44,6 +46,15 @@ type ContainerConfig struct {
 	Workdir    string `toml:"workdir"`
 	Shell      string `toml:"shell"`
 	Privileged bool   `toml:"privileged"`
+}
+
+type MountsConfig struct {
+	ReadOnly []ReadOnlyMountConfig `toml:"readonly"`
+}
+
+type ReadOnlyMountConfig struct {
+	Source string `toml:"source"`
+	Target string `toml:"target"`
 }
 
 type GitConfig struct {
@@ -210,6 +221,147 @@ func (c Config) BuildImageSpec(out, errOut io.Writer) (core.BuildImageSpec, erro
 	}, nil
 }
 
+func (c Config) ReadOnlyConfigMounts() ([]core.MountSpec, error) {
+	mounts := make([]core.MountSpec, 0, len(c.Mounts.ReadOnly))
+	seenTargets := make(map[string]string, len(c.Mounts.ReadOnly))
+	for i, entry := range c.Mounts.ReadOnly {
+		label := fmt.Sprintf("mounts.readonly[%d]", i)
+		mount, err := c.readOnlyConfigMount(entry.Source, entry.Target)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", label, err)
+		}
+		if previous, ok := seenTargets[mount.Target]; ok {
+			return nil, fmt.Errorf(
+				"%s: container target %s is already used by %s; choose a different target",
+				label,
+				mount.Target,
+				previous,
+			)
+		}
+		seenTargets[mount.Target] = label
+		mounts = append(mounts, mount)
+	}
+	return mounts, nil
+}
+
+func (c Config) readOnlyConfigMount(sourcePath, target string) (core.MountSpec, error) {
+	if strings.TrimSpace(sourcePath) == "" {
+		return core.MountSpec{}, fmt.Errorf("source is empty; use a host path like \".gitconfig\" or \".config/app\"")
+	}
+	source, err := expandMountSourcePath(sourcePath)
+	if err != nil {
+		return core.MountSpec{}, err
+	}
+	info, err := os.Stat(source)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return core.MountSpec{}, fmt.Errorf("host path %s does not exist; check the path or create it first", source)
+		}
+		return core.MountSpec{}, fmt.Errorf("check host path %s: %w", source, err)
+	}
+	if !info.IsDir() && !info.Mode().IsRegular() {
+		return core.MountSpec{}, fmt.Errorf("host path %s must be a regular file or directory", source)
+	}
+	if strings.TrimSpace(target) == "" {
+		target, err = inferReadOnlyMountTarget(source)
+		if err != nil {
+			return core.MountSpec{}, err
+		}
+	}
+	target = normalizeReadOnlyMountTarget(target)
+	if target == "/home/dev" || !strings.HasPrefix(target, "/home/dev/") {
+		return core.MountSpec{}, fmt.Errorf(
+			"container target %s is not allowed; read-only config mounts must stay under /home/dev",
+			target,
+		)
+	}
+	for _, reserved := range []string{"/home/dev/.cache", "/home/dev/.ssh"} {
+		if pathConflicts(target, reserved) {
+			return core.MountSpec{}, fmt.Errorf(
+				"container target %s overlaps Ark-managed path %s; choose another target under /home/dev",
+				target,
+				reserved,
+			)
+		}
+	}
+	return core.MountSpec{
+		Type:     core.MountTypeBind,
+		Source:   source,
+		Target:   target,
+		ReadOnly: true,
+	}, nil
+}
+
+func pathConflicts(target, reserved string) bool {
+	return target == reserved || strings.HasPrefix(target, reserved+"/")
+}
+
+func expandMountSourcePath(sourcePath string) (string, error) {
+	if sourcePath == "" {
+		return "", nil
+	}
+	if filepath.IsAbs(sourcePath) || strings.HasPrefix(sourcePath, "~") {
+		return expandPath(sourcePath)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory for %q: %w", sourcePath, err)
+	}
+	source := filepath.Join(home, sourcePath)
+	source, err = filepath.Abs(source)
+	if err != nil {
+		return "", fmt.Errorf("resolve host path %q: %w", sourcePath, err)
+	}
+	home, err = filepath.Abs(home)
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory for %q: %w", sourcePath, err)
+	}
+	if !paths.IsInsidePath(source, home) {
+		return "", fmt.Errorf(
+			"relative host path %q escapes your home directory; use a path inside %s or an explicit absolute path",
+			sourcePath,
+			home,
+		)
+	}
+	return source, nil
+}
+
+func inferReadOnlyMountTarget(source string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory for mount target inference: %w", err)
+	}
+	home, err = filepath.Abs(home)
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory for mount target inference: %w", err)
+	}
+	if !paths.IsInsidePath(source, home) {
+		return "", fmt.Errorf(
+			"host path %s is outside your home directory, so Ark cannot infer a container target; set target explicitly",
+			source,
+		)
+	}
+	rel, err := filepath.Rel(home, source)
+	if err != nil {
+		return "", fmt.Errorf("infer container target for %s: %w", source, err)
+	}
+	if rel == "." {
+		return "", fmt.Errorf("host path %s points at your home directory; mount a file or subdirectory instead", source)
+	}
+	return pathpkg.Join("/home/dev", filepath.ToSlash(rel)), nil
+}
+
+func normalizeReadOnlyMountTarget(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return ""
+	}
+	if !strings.HasPrefix(target, "/") {
+		target = pathpkg.Join("/home/dev", filepath.ToSlash(target))
+	}
+	return pathpkg.Clean(target)
+}
+
 func WriteDefaultConfig(p paths.Paths, force bool) error {
 	if err := p.EnsureConfigDir(); err != nil {
 		return err
@@ -262,6 +414,21 @@ user = "dev"
 workdir = "/work"
 shell = "/bin/zsh"
 privileged = true
+
+[mounts]
+# Ark resolves relative source paths from your host home directory.
+# If target is omitted, Ark mounts to the same relative path under /home/dev.
+#
+# [[mounts.readonly]]
+# source = ".config/app"
+#
+# [[mounts.readonly]]
+# source = ".gitconfig"
+#
+# Optional explicit remap:
+# [[mounts.readonly]]
+# source = "~/dotfiles/git/gitconfig"
+# target = ".gitconfig"
 
 [git]
 enabled = true

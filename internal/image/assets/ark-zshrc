@@ -1,0 +1,17 @@
+source /usr/share/powerlevel10k/powerlevel10k.zsh-theme
+
+source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+
+typeset -g ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=8'
+typeset -g ZSH_AUTOSUGGEST_STRATEGY=(history completion)
+
+export CLICOLOR=1
+export LSCOLORS='ExFxCxDxBxegedabagacad'
+export LS_COLORS='di=1;34:ln=1;36:so=1;35:pi=33:ex=1;32:bd=1;33;40:cd=1;33;40:su=37;41:sg=30;43:tw=30;42:ow=34;42:*.tar=1;31:*.tgz=1;31:*.zip=1;31:*.gz=1;31:*.jpg=0;35:*.jpeg=0;35:*.png=0;35:*.gif=0;35:*.webp=0;35:*.mp4=0;35:*.mkv=0;35:*.pdf=0;32:*.md=0;36:*.toml=0;36:*.yaml=0;36:*.yml=0;36:*.json=0;36:*.lua=0;36:*.py=0;36:*.go=0;36:*.rs=0;36:*.sh=0;32'
+alias ls='ls --color=auto'
+alias ll='ls -lah --color=auto'
+alias la='ls -A --color=auto'
+alias l='ls -CF --color=auto'
+
+[[ -r /etc/ark/p10k.zsh ]] && source /etc/ark/p10k.zsh

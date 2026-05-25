@@ -17,13 +17,15 @@ import (
 	"github.com/Dave-lab12/ark/internal/paths"
 )
 
-//go:embed assets/Containerfile assets/ark-entrypoint assets/ark-ssh
+//go:embed assets/Containerfile assets/ark-entrypoint assets/ark-ssh assets/ark-zshrc assets/p10k.zsh
 var embeddedBaseImageFS embed.FS
 
 var fingerprintFiles = []string{
 	"Containerfile",
 	"ark-entrypoint",
 	"ark-ssh",
+	"ark-zshrc",
+	"p10k.zsh",
 }
 
 type embeddedImageAsset struct {
@@ -36,6 +38,8 @@ var embeddedImageAssets = []embeddedImageAsset{
 	{Name: "Containerfile", Path: "assets/Containerfile", Perm: 0o644},
 	{Name: "ark-entrypoint", Path: "assets/ark-entrypoint", Perm: 0o755},
 	{Name: "ark-ssh", Path: "assets/ark-ssh", Perm: 0o755},
+	{Name: "ark-zshrc", Path: "assets/ark-zshrc", Perm: 0o644},
+	{Name: "p10k.zsh", Path: "assets/p10k.zsh", Perm: 0o644},
 }
 
 func BuildBaseImage(ctx context.Context, rt Runtime, config Config, out, errOut io.Writer) error {

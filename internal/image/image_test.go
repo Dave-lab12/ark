@@ -94,4 +94,40 @@ func TestEnsureImageSourcePreservesCustomImageSource(t *testing.T) {
 	if string(got) != "custom" {
 		t.Fatalf("custom image source was overwritten: %q", string(got))
 	}
+
+	arkZshrc := filepath.Join(config.Image.Source, "ark-zshrc")
+	if _, err := os.Stat(arkZshrc); err != nil {
+		t.Fatalf("missing seeded theme asset %s: %v", arkZshrc, err)
+	}
+}
+
+func TestComputeImageFingerprintIncludesThemeAssets(t *testing.T) {
+	dir := t.TempDir()
+	for _, asset := range embeddedImageAssets {
+		data, err := readEmbeddedImageAsset(asset)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, asset.Name), data, asset.Perm); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	before, err := computeImageFingerprint("docker", "test-version", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	p10kPath := filepath.Join(dir, "p10k.zsh")
+	if err := os.WriteFile(p10kPath, []byte("changed"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	after, err := computeImageFingerprint("docker", "test-version", dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before == after {
+		t.Fatal("theme asset change did not affect image fingerprint")
+	}
 }

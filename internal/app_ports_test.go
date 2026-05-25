@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -180,6 +181,71 @@ func TestRunProjectPortChangeRecreatesVolumes(t *testing.T) {
 	wantVolumes := []string{"ark-test-home", "ark-test-cache"}
 	if !reflect.DeepEqual(rt.createdVolumes, wantVolumes) {
 		t.Fatalf("createdVolumes mismatch:\n got: %v\nwant: %v", rt.createdVolumes, wantVolumes)
+	}
+}
+
+func TestCreateProjectContainerIncludesReadOnlyConfigMounts(t *testing.T) {
+	ctx := context.Background()
+	rt := &fakePortRuntime{}
+	app, _, _ := newPortTestApp(t, "", testProject(t, nil, false), rt)
+
+	configDir := filepath.Join(t.TempDir(), "app")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	configFile := filepath.Join(t.TempDir(), ".gitconfig")
+	if err := os.WriteFile(configFile, []byte("[user]\n\tname = yab\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	app.config.Mounts.ReadOnly = []ReadOnlyMountConfig{
+		{Source: configDir, Target: "/home/dev/.config/app"},
+		{Source: configFile, Target: "/home/dev/.gitconfig"},
+	}
+
+	if err := app.createProjectContainer(ctx, rt, mustRegistryProject(t, app, "app")); err != nil {
+		t.Fatalf("createProjectContainer: %v", err)
+	}
+	if len(rt.createSpecs) != 1 {
+		t.Fatalf("Create called %d times", len(rt.createSpecs))
+	}
+
+	got := rt.createSpecs[0].Mounts
+	if !hasMount(got, MountSpec{
+		Type:     MountTypeBind,
+		Source:   configDir,
+		Target:   "/home/dev/.config/app",
+		ReadOnly: true,
+	}) {
+		t.Fatalf("missing read-only directory mount: %#v", got)
+	}
+	if !hasMount(got, MountSpec{
+		Type:     MountTypeBind,
+		Source:   configFile,
+		Target:   "/home/dev/.gitconfig",
+		ReadOnly: true,
+	}) {
+		t.Fatalf("missing read-only file mount: %#v", got)
+	}
+}
+
+func TestCreateProjectContainerRejectsInvalidConfigMount(t *testing.T) {
+	ctx := context.Background()
+	rt := &fakePortRuntime{}
+	app, _, _ := newPortTestApp(t, "", testProject(t, nil, false), rt)
+
+	app.config.Mounts.ReadOnly = []ReadOnlyMountConfig{
+		{Source: t.TempDir(), Target: "/home/dev/.cache/app"},
+	}
+
+	err := app.createProjectContainer(ctx, rt, mustRegistryProject(t, app, "app"))
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), "mounts.readonly[0]") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rt.createSpecs) != 0 {
+		t.Fatalf("runtime should not receive Create on invalid mount config: %#v", rt.createSpecs)
 	}
 }
 
@@ -435,6 +501,15 @@ func mustRegistryProject(t *testing.T, app *App, name string) Project {
 		t.Fatalf("registry.Project(%q): %v", name, err)
 	}
 	return project
+}
+
+func hasMount(mounts []MountSpec, want MountSpec) bool {
+	for _, mount := range mounts {
+		if reflect.DeepEqual(mount, want) {
+			return true
+		}
+	}
+	return false
 }
 
 var _ Runtime = (*fakePortRuntime)(nil)
