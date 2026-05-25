@@ -163,6 +163,14 @@ workdir = "/work"
 shell = "/bin/zsh"
 privileged = true
 
+[mounts]
+# Optional read-only mounts from your host home directory:
+# [[mounts.readonly]]
+# source = ".config/app"
+#
+# [[mounts.readonly]]
+# source = ".gitconfig"
+
 [git]
 enabled = true
 broker_socket = "/run/ark/git-broker.sock"
@@ -180,6 +188,40 @@ default = "code"
 Ark embeds its default base image in the binary and syncs it to `~/.ark/image`. To use a custom base image, point `[image].source` at your own directory containing a `Containerfile`, `ark-entrypoint`, and `ark-ssh`.
 
 **Config changes only affect new projects.** Existing projects use the image and runtime stored at creation time.
+
+### Read-only host config mounts
+
+You can mount dotfiles or config directories from your host into `/home/dev`
+inside every new project container:
+
+```toml
+[mounts]
+[[mounts.readonly]]
+source = ".config/app"
+
+[[mounts.readonly]]
+source = ".gitconfig"
+```
+
+Relative `source` paths are resolved from your host home directory. When
+`target` is omitted, Ark mounts to the same relative path under `/home/dev`,
+so the examples above become:
+
+- `~/.config/app` -> `/home/dev/.config/app`
+- `~/.gitconfig` -> `/home/dev/.gitconfig`
+
+If you need a different container path, set `target` explicitly. Relative
+targets are resolved under `/home/dev`:
+
+```toml
+[mounts]
+[[mounts.readonly]]
+source = "~/dotfiles/git/gitconfig"
+target = ".gitconfig"
+```
+
+Ark rejects targets outside `/home/dev`, duplicate targets, and mounts that
+overlap Ark-managed paths such as `/home/dev/.cache` or `/home/dev/.ssh`.
 
 ---
 

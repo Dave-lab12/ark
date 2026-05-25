@@ -189,16 +189,18 @@ func TestCreateProjectContainerIncludesReadOnlyConfigMounts(t *testing.T) {
 	rt := &fakePortRuntime{}
 	app, _, _ := newPortTestApp(t, "", testProject(t, nil, false), rt)
 
-	nvimDir := filepath.Join(t.TempDir(), "nvim")
-	if err := os.MkdirAll(nvimDir, 0o755); err != nil {
+	configDir := filepath.Join(t.TempDir(), "app")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatalf("MkdirAll: %v", err)
 	}
-	tmuxFile := filepath.Join(t.TempDir(), ".tmux.conf")
-	if err := os.WriteFile(tmuxFile, []byte("set -g mouse on\n"), 0o644); err != nil {
+	configFile := filepath.Join(t.TempDir(), ".gitconfig")
+	if err := os.WriteFile(configFile, []byte("[user]\n\tname = yab\n"), 0o644); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
-	app.config.Mounts.Neovim = nvimDir
-	app.config.Mounts.Tmux = tmuxFile
+	app.config.Mounts.ReadOnly = []ReadOnlyMountConfig{
+		{Source: configDir, Target: "/home/dev/.config/app"},
+		{Source: configFile, Target: "/home/dev/.gitconfig"},
+	}
 
 	if err := app.createProjectContainer(ctx, rt, mustRegistryProject(t, app, "app")); err != nil {
 		t.Fatalf("createProjectContainer: %v", err)
@@ -210,19 +212,19 @@ func TestCreateProjectContainerIncludesReadOnlyConfigMounts(t *testing.T) {
 	got := rt.createSpecs[0].Mounts
 	if !hasMount(got, MountSpec{
 		Type:     MountTypeBind,
-		Source:   nvimDir,
-		Target:   "/home/dev/.config/nvim",
+		Source:   configDir,
+		Target:   "/home/dev/.config/app",
 		ReadOnly: true,
 	}) {
-		t.Fatalf("missing read-only Neovim mount: %#v", got)
+		t.Fatalf("missing read-only directory mount: %#v", got)
 	}
 	if !hasMount(got, MountSpec{
 		Type:     MountTypeBind,
-		Source:   tmuxFile,
-		Target:   "/home/dev/.tmux.conf",
+		Source:   configFile,
+		Target:   "/home/dev/.gitconfig",
 		ReadOnly: true,
 	}) {
-		t.Fatalf("missing read-only tmux mount: %#v", got)
+		t.Fatalf("missing read-only file mount: %#v", got)
 	}
 }
 
@@ -231,13 +233,15 @@ func TestCreateProjectContainerRejectsInvalidConfigMount(t *testing.T) {
 	rt := &fakePortRuntime{}
 	app, _, _ := newPortTestApp(t, "", testProject(t, nil, false), rt)
 
-	app.config.Mounts.Neovim = t.TempDir()
+	app.config.Mounts.ReadOnly = []ReadOnlyMountConfig{
+		{Source: t.TempDir(), Target: "/home/dev/.cache/app"},
+	}
 
 	err := app.createProjectContainer(ctx, rt, mustRegistryProject(t, app, "app"))
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	if !strings.Contains(err.Error(), "mounts.neovim") {
+	if !strings.Contains(err.Error(), "mounts.readonly[0]") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(rt.createSpecs) != 0 {

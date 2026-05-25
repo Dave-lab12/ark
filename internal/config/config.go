@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	pathpkg "path"
 	"path/filepath"
 	"strings"
 
@@ -48,8 +49,12 @@ type ContainerConfig struct {
 }
 
 type MountsConfig struct {
-	Neovim string `toml:"neovim"`
-	Tmux   string `toml:"tmux"`
+	ReadOnly []ReadOnlyMountConfig `toml:"readonly"`
+}
+
+type ReadOnlyMountConfig struct {
+	Source string `toml:"source"`
+	Target string `toml:"target"`
 }
 
 type GitConfig struct {
@@ -217,48 +222,67 @@ func (c Config) BuildImageSpec(out, errOut io.Writer) (core.BuildImageSpec, erro
 }
 
 func (c Config) ReadOnlyConfigMounts() ([]core.MountSpec, error) {
-	mounts := make([]core.MountSpec, 0, 2)
-	if strings.TrimSpace(c.Mounts.Neovim) != "" {
-		mount, err := c.readOnlyConfigMount(c.Mounts.Neovim, "/home/dev/.config/nvim", true, "nvim")
+	mounts := make([]core.MountSpec, 0, len(c.Mounts.ReadOnly))
+	seenTargets := make(map[string]string, len(c.Mounts.ReadOnly))
+	for i, entry := range c.Mounts.ReadOnly {
+		label := fmt.Sprintf("mounts.readonly[%d]", i)
+		mount, err := c.readOnlyConfigMount(entry.Source, entry.Target)
 		if err != nil {
-			return nil, fmt.Errorf("mounts.neovim: %w", err)
+			return nil, fmt.Errorf("%s: %w", label, err)
 		}
-		mounts = append(mounts, mount)
-	}
-	if strings.TrimSpace(c.Mounts.Tmux) != "" {
-		mount, err := c.readOnlyConfigMount(c.Mounts.Tmux, "/home/dev/.tmux.conf", false, ".tmux.conf", "tmux.conf")
-		if err != nil {
-			return nil, fmt.Errorf("mounts.tmux: %w", err)
+		if previous, ok := seenTargets[mount.Target]; ok {
+			return nil, fmt.Errorf(
+				"%s: container target %s is already used by %s; choose a different target",
+				label,
+				mount.Target,
+				previous,
+			)
 		}
+		seenTargets[mount.Target] = label
 		mounts = append(mounts, mount)
 	}
 	return mounts, nil
 }
 
-func (c Config) readOnlyConfigMount(sourcePath, target string, wantDir bool, allowedBaseNames ...string) (core.MountSpec, error) {
-	source, err := expandPath(sourcePath)
+func (c Config) readOnlyConfigMount(sourcePath, target string) (core.MountSpec, error) {
+	if strings.TrimSpace(sourcePath) == "" {
+		return core.MountSpec{}, fmt.Errorf("source is empty; use a host path like \".gitconfig\" or \".config/app\"")
+	}
+	source, err := expandMountSourcePath(sourcePath)
 	if err != nil {
 		return core.MountSpec{}, err
 	}
 	info, err := os.Stat(source)
 	if err != nil {
-		return core.MountSpec{}, fmt.Errorf("stat source %s: %w", source, err)
+		if errors.Is(err, os.ErrNotExist) {
+			return core.MountSpec{}, fmt.Errorf("host path %s does not exist; check the path or create it first", source)
+		}
+		return core.MountSpec{}, fmt.Errorf("check host path %s: %w", source, err)
 	}
-	if wantDir && !info.IsDir() {
-		return core.MountSpec{}, fmt.Errorf("source %s must be a directory", source)
+	if !info.IsDir() && !info.Mode().IsRegular() {
+		return core.MountSpec{}, fmt.Errorf("host path %s must be a regular file or directory", source)
 	}
-	if !wantDir && !info.Mode().IsRegular() {
-		return core.MountSpec{}, fmt.Errorf("source %s must be a regular file", source)
+	if strings.TrimSpace(target) == "" {
+		target, err = inferReadOnlyMountTarget(source)
+		if err != nil {
+			return core.MountSpec{}, err
+		}
 	}
-	if !hasAllowedBaseName(source, allowedBaseNames) {
+	target = normalizeReadOnlyMountTarget(target)
+	if target == "/home/dev" || !strings.HasPrefix(target, "/home/dev/") {
 		return core.MountSpec{}, fmt.Errorf(
-			"source %s must end with one of %q",
-			source,
-			allowedBaseNames,
+			"container target %s is not allowed; read-only config mounts must stay under /home/dev",
+			target,
 		)
 	}
-	if !strings.HasPrefix(filepath.Clean(target), "/home/dev/") {
-		return core.MountSpec{}, fmt.Errorf("target %s must stay under /home/dev", target)
+	for _, reserved := range []string{"/home/dev/.cache", "/home/dev/.ssh"} {
+		if pathConflicts(target, reserved) {
+			return core.MountSpec{}, fmt.Errorf(
+				"container target %s overlaps Ark-managed path %s; choose another target under /home/dev",
+				target,
+				reserved,
+			)
+		}
 	}
 	return core.MountSpec{
 		Type:     core.MountTypeBind,
@@ -268,14 +292,74 @@ func (c Config) readOnlyConfigMount(sourcePath, target string, wantDir bool, all
 	}, nil
 }
 
-func hasAllowedBaseName(path string, allowed []string) bool {
-	base := filepath.Base(path)
-	for _, candidate := range allowed {
-		if base == candidate {
-			return true
-		}
+func pathConflicts(target, reserved string) bool {
+	return target == reserved || strings.HasPrefix(target, reserved+"/")
+}
+
+func expandMountSourcePath(sourcePath string) (string, error) {
+	if sourcePath == "" {
+		return "", nil
 	}
-	return false
+	if filepath.IsAbs(sourcePath) || strings.HasPrefix(sourcePath, "~") {
+		return expandPath(sourcePath)
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory for %q: %w", sourcePath, err)
+	}
+	source := filepath.Join(home, sourcePath)
+	source, err = filepath.Abs(source)
+	if err != nil {
+		return "", fmt.Errorf("resolve host path %q: %w", sourcePath, err)
+	}
+	home, err = filepath.Abs(home)
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory for %q: %w", sourcePath, err)
+	}
+	if !paths.IsInsidePath(source, home) {
+		return "", fmt.Errorf(
+			"relative host path %q escapes your home directory; use a path inside %s or an explicit absolute path",
+			sourcePath,
+			home,
+		)
+	}
+	return source, nil
+}
+
+func inferReadOnlyMountTarget(source string) (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory for mount target inference: %w", err)
+	}
+	home, err = filepath.Abs(home)
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory for mount target inference: %w", err)
+	}
+	if !paths.IsInsidePath(source, home) {
+		return "", fmt.Errorf(
+			"host path %s is outside your home directory, so Ark cannot infer a container target; set target explicitly",
+			source,
+		)
+	}
+	rel, err := filepath.Rel(home, source)
+	if err != nil {
+		return "", fmt.Errorf("infer container target for %s: %w", source, err)
+	}
+	if rel == "." {
+		return "", fmt.Errorf("host path %s points at your home directory; mount a file or subdirectory instead", source)
+	}
+	return pathpkg.Join("/home/dev", filepath.ToSlash(rel)), nil
+}
+
+func normalizeReadOnlyMountTarget(target string) string {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return ""
+	}
+	if !strings.HasPrefix(target, "/") {
+		target = pathpkg.Join("/home/dev", filepath.ToSlash(target))
+	}
+	return pathpkg.Clean(target)
 }
 
 func WriteDefaultConfig(p paths.Paths, force bool) error {
@@ -332,8 +416,19 @@ shell = "/bin/zsh"
 privileged = true
 
 [mounts]
-neovim = ""
-tmux = ""
+# Ark resolves relative source paths from your host home directory.
+# If target is omitted, Ark mounts to the same relative path under /home/dev.
+#
+# [[mounts.readonly]]
+# source = ".config/app"
+#
+# [[mounts.readonly]]
+# source = ".gitconfig"
+#
+# Optional explicit remap:
+# [[mounts.readonly]]
+# source = "~/dotfiles/git/gitconfig"
+# target = ".gitconfig"
 
 [git]
 enabled = true
