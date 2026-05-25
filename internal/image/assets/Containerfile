@@ -17,6 +17,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     LC_ALL=C.UTF-8
 
 ARG ARK_EXTRA_APT_PACKAGES=""
+ARG POWERLEVEL10K_REF="v1.20.0"
 
 # ---- Layer 1: system packages + Docker engine -------------------------------
 # Combined into one RUN so the apt index/cache is purged within the layer.
@@ -51,6 +52,8 @@ RUN set -eux \
         wget \
         xz-utils \
         zsh \
+        zsh-autosuggestions \
+        zsh-syntax-highlighting \
         ${ARK_EXTRA_APT_PACKAGES} \
  && install -m 0755 -d /etc/apt/keyrings \
  && curl -fsSL https://download.docker.com/linux/debian/gpg \
@@ -86,6 +89,7 @@ RUN set -eux \
         MISE_VERSION="${MISE_VERSION}" \
         MISE_INSTALL_PATH=/usr/local/bin/mise \
         sh \
+ && git clone --depth=1 --branch "${POWERLEVEL10K_REF}" https://github.com/romkatv/powerlevel10k.git /usr/share/powerlevel10k \
  && groupadd -f docker \
  && if ! getent group "${ARK_USER_GID}" >/dev/null; then \
         groupadd -g "${ARK_USER_GID}" dev; \
@@ -95,7 +99,7 @@ RUN set -eux \
  && passwd -l dev \
  && echo "dev ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/dev \
  && chmod 0440 /etc/sudoers.d/dev \
- && mkdir -p /etc/zsh \
+ && mkdir -p /etc/ark /etc/zsh \
  && { \
         echo '# ark base zsh defaults'; \
         echo 'HISTFILE=$HOME/.zsh_history'; \
@@ -103,11 +107,14 @@ RUN set -eux \
         echo 'SAVEHIST=100000'; \
         echo 'setopt SHARE_HISTORY INC_APPEND_HISTORY HIST_IGNORE_DUPS HIST_IGNORE_SPACE'; \
         echo 'eval "$(/usr/local/bin/mise activate zsh)"'; \
+        echo '[ -r /etc/zsh/ark-zshrc ] && source /etc/zsh/ark-zshrc'; \
     } >> /etc/zsh/zshrc
 
 # ---- Ark scripts ------------------------------------------------------------
 COPY ark-entrypoint /usr/local/bin/ark-entrypoint
 COPY ark-ssh        /usr/local/bin/ark-ssh
+COPY ark-zshrc      /etc/zsh/ark-zshrc
+COPY p10k.zsh       /etc/ark/p10k.zsh
 RUN chmod 0755 /usr/local/bin/ark-entrypoint /usr/local/bin/ark-ssh
 
 WORKDIR /work
