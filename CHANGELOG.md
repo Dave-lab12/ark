@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.1.2](https://github.com/Dave-lab12/ark/compare/v0.1.1...v0.1.2) (2026-05-25)
+
+
+### Bug Fixes
+
+* add readonly nvim and tmux mounts ([ab782e2](https://github.com/Dave-lab12/ark/commit/ab782e2df31fdc25f6b3f74cff380d8963007c87))
+* Added themes default ([eb3f9de](https://github.com/Dave-lab12/ark/commit/eb3f9de72bcce94520e2b45f51e61117e187a06e))
+* generalize read-only host mounts ([e52dab9](https://github.com/Dave-lab12/ark/commit/e52dab969bc4dc919646669f00fe58512ca6c401))
+
 ## [0.1.1](https://github.com/Dave-lab12/ark/compare/v0.1.0...v0.1.1) (2026-05-18)
 
 
