@@ -135,7 +135,9 @@ func TestBuildDevcontainerEnvFromProjectEnv(t *testing.T) {
 	project := devcontainerTestProject(nil, true)
 	project.SSHEnabled = true
 	config := DefaultConfig()
-	got := parseDevcontainerJSON(t, project, config)
+	got := parseDevcontainerJSONWithOptions(t, project, config, DevcontainerRenderOptions{
+		ControlPlaneSource: "/host/ark/sockets/project",
+	})
 
 	env, ok := got["containerEnv"].(map[string]any)
 	if !ok {
@@ -150,11 +152,23 @@ func TestBuildDevcontainerEnvFromProjectEnv(t *testing.T) {
 	if _, ok := env["DOCKER_HOST"]; !ok {
 		t.Fatalf("DOCKER_HOST missing from containerEnv: %#v", env)
 	}
-	if _, ok := env["GIT_SSH_COMMAND"]; ok {
-		t.Fatalf("GIT_SSH_COMMAND should be omitted from native devcontainer env: %#v", env)
+	if env["GIT_SSH_COMMAND"] != "/usr/local/bin/ark-ssh" {
+		t.Fatalf("GIT_SSH_COMMAND = %v", env["GIT_SSH_COMMAND"])
 	}
-	if _, ok := env["ARK_GIT_BROKER_SOCK"]; ok {
-		t.Fatalf("ARK_GIT_BROKER_SOCK should be omitted from native devcontainer env: %#v", env)
+	if env["ARK_GIT_BROKER_SOCK"] != "/run/ark/git-broker.sock" {
+		t.Fatalf("ARK_GIT_BROKER_SOCK = %v", env["ARK_GIT_BROKER_SOCK"])
+	}
+	mounts := gotArray(t, got, "mounts")
+	foundControlPlane := false
+	for _, raw := range mounts {
+		mount, ok := raw.(string)
+		if ok && strings.Contains(mount, "source=/host/ark/sockets/project,target=/run/ark,type=bind") {
+			foundControlPlane = true
+			break
+		}
+	}
+	if !foundControlPlane {
+		t.Fatalf("missing control-plane mount: %#v", mounts)
 	}
 }
 
