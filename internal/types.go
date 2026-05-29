@@ -42,6 +42,7 @@ type Project = core.Project
 type Volumes = core.Volumes
 type PortMapping = core.PortMapping
 type Container = core.Container
+type ResourceStats = core.ResourceStats
 type BuildImageSpec = core.BuildImageSpec
 type CreateSpec = core.CreateSpec
 type MountSpec = core.MountSpec

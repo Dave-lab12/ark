@@ -39,6 +39,9 @@ func (r *AppleRuntime) Exec(context.Context, string, ExecSpec) error { return r.
 func (r *AppleRuntime) Inspect(context.Context, string) (*Container, error) {
 	return nil, r.notSupported("inspect")
 }
+func (r *AppleRuntime) Stats(context.Context, string) (*ResourceStats, error) {
+	return nil, r.notSupported("stats")
+}
 func (r *AppleRuntime) List(context.Context) ([]Container, error) { return nil, r.notSupported("list") }
 func (r *AppleRuntime) CreateVolume(context.Context, string) error {
 	return r.notSupported("create volume")

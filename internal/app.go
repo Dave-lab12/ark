@@ -38,6 +38,7 @@ type InitOptions struct {
 	DockerEnabled bool
 	Enter         bool
 	Ports         PortOptions
+	Memory        MemoryOptions
 }
 
 type PortOptions struct {
@@ -47,10 +48,22 @@ type PortOptions struct {
 	List      bool
 }
 
+type MemoryOptions struct {
+	Specified bool
+	Limit     string
+	Clear     bool
+}
+
+type ProjectOptions struct {
+	Ports  PortOptions
+	Memory MemoryOptions
+}
+
 type EditOptions struct {
 	EditorOverride string
 	Folder         string
 	Ports          PortOptions
+	Memory         MemoryOptions
 }
 
 func normalizePortOptions(ports PortOptions) (PortOptions, error) {
@@ -64,6 +77,37 @@ func normalizePortOptions(ports PortOptions) (PortOptions, error) {
 	return ports, nil
 }
 
+func normalizeMemoryOptions(memory MemoryOptions) (MemoryOptions, error) {
+	memory.Specified = memory.Specified || memory.Limit != "" || memory.Clear
+	if memory.Limit != "" && memory.Clear {
+		return memory, errors.New("--memory and --no-memory are mutually exclusive")
+	}
+	if memory.Limit != "" {
+		limit, err := NormalizeMemoryLimit(memory.Limit)
+		if err != nil {
+			return memory, err
+		}
+		memory.Limit = limit
+	}
+	return memory, nil
+}
+
+func normalizeProjectOptions(opts ProjectOptions) (ProjectOptions, error) {
+	var err error
+	opts.Ports, err = normalizePortOptions(opts.Ports)
+	if err != nil {
+		return opts, err
+	}
+	opts.Memory, err = normalizeMemoryOptions(opts.Memory)
+	if err != nil {
+		return opts, err
+	}
+	if opts.Ports.List && opts.Memory.Specified {
+		return opts, errors.New("--ports cannot be combined with --memory or --no-memory")
+	}
+	return opts, nil
+}
+
 func truncateColumn(s string, width int) string {
 	if len(s) <= width {
 		return s
@@ -72,6 +116,10 @@ func truncateColumn(s string, width int) string {
 		return s[:width]
 	}
 	return s[:width-3] + "..."
+}
+
+func formatCPUPercent(cpu float64) string {
+	return fmt.Sprintf("%.1f%%", cpu)
 }
 
 // NewApp is intentionally cheap: it resolves paths and wires I/O streams,
@@ -136,10 +184,12 @@ func (a *App) Prepare(ctx context.Context) error {
 }
 
 func (a *App) InitProject(ctx context.Context, name string, opts InitOptions) error {
-	ports, err := normalizePortOptions(opts.Ports)
+	projectOpts, err := normalizeProjectOptions(ProjectOptions{Ports: opts.Ports, Memory: opts.Memory})
 	if err != nil {
 		return err
 	}
+	ports := projectOpts.Ports
+	memory := projectOpts.Memory
 	var initialPorts []PortMapping
 	if ports.Specified && !ports.Clear && len(ports.Specs) > 0 {
 		initialPorts, err = ParsePortChange(ports.Specs, nil)
@@ -182,6 +232,9 @@ func (a *App) InitProject(ctx context.Context, name string, opts InitOptions) er
 		return err
 	}
 	project.Ports = initialPorts
+	if memory.Specified && !memory.Clear {
+		project.Memory = memory.Limit
+	}
 
 	if err := ensureProjectControlPlane(a.paths, project); err != nil {
 		return err
@@ -227,7 +280,11 @@ func (a *App) InitProject(ctx context.Context, name string, opts InitOptions) er
 }
 
 func (a *App) StartProject(ctx context.Context, name string, enter bool, ports PortOptions) error {
-	ports, err := normalizePortOptions(ports)
+	return a.StartProjectWithOptions(ctx, name, enter, ProjectOptions{Ports: ports})
+}
+
+func (a *App) StartProjectWithOptions(ctx context.Context, name string, enter bool, opts ProjectOptions) error {
+	opts, err := normalizeProjectOptions(opts)
 	if err != nil {
 		return err
 	}
@@ -235,7 +292,7 @@ func (a *App) StartProject(ctx context.Context, name string, enter bool, ports P
 	if err != nil {
 		return err
 	}
-	if ports.List {
+	if opts.Ports.List {
 		a.printProjectPorts(project)
 		return nil
 	}
@@ -243,7 +300,7 @@ func (a *App) StartProject(ctx context.Context, name string, enter bool, ports P
 	if err != nil {
 		return err
 	}
-	project, err = a.applyRequestedPorts(ctx, rt, project, ports)
+	project, err = a.applyRequestedProjectOptions(ctx, rt, project, opts)
 	if err != nil {
 		return err
 	}
@@ -267,11 +324,11 @@ func (a *App) StartProject(ctx context.Context, name string, enter bool, ports P
 }
 
 func (a *App) EditProject(ctx context.Context, name string, opts EditOptions) error {
-	ports, err := normalizePortOptions(opts.Ports)
+	projectOpts, err := normalizeProjectOptions(ProjectOptions{Ports: opts.Ports, Memory: opts.Memory})
 	if err != nil {
 		return err
 	}
-	if ports.List {
+	if projectOpts.Ports.List {
 		return errors.New("--ports cannot be combined with ark edit; use ark <name> --ports")
 	}
 
@@ -285,7 +342,7 @@ func (a *App) EditProject(ctx context.Context, name string, opts EditOptions) er
 		return err
 	}
 
-	project, err = a.applyRequestedPorts(ctx, rt, project, ports)
+	project, err = a.applyRequestedProjectOptions(ctx, rt, project, projectOpts)
 	if err != nil {
 		return err
 	}
@@ -568,7 +625,7 @@ func (a *App) ListProjects(ctx context.Context) error {
 		fmt.Fprintln(a.out, "No ark projects yet.")
 		return nil
 	}
-	fmt.Fprintf(a.out, "%-18s %-8s %-12s %-18s %s\n", "NAME", "RUNTIME", "STATUS", "PORTS", "PATH")
+	fmt.Fprintf(a.out, "%-18s %-8s %-12s %-18s %-10s %-8s %-10s %s\n", "NAME", "RUNTIME", "STATUS", "PORTS", "LIMIT", "CPU", "RAM", "PATH")
 	names := make([]string, 0, len(state.Projects))
 	for name := range state.Projects {
 		names = append(names, name)
@@ -577,6 +634,7 @@ func (a *App) ListProjects(ctx context.Context) error {
 	for _, name := range names {
 		project := state.Projects[name]
 		status := "unknown"
+		var stats *ResourceStats
 		runtimeByName := a.runtimeByName
 		if runtimeByName == nil {
 			runtimeByName = RuntimeByName
@@ -584,19 +642,38 @@ func (a *App) ListProjects(ctx context.Context) error {
 		if rt, err := runtimeByName(project.Runtime); err == nil {
 			if container, err := rt.Inspect(ctx, project.ContainerName); err == nil {
 				status = container.Status
+				if container.Running {
+					if liveStats, err := rt.Stats(ctx, project.ContainerName); err == nil {
+						stats = liveStats
+					}
+				}
 			}
 		}
 		ports := FormatPortList(project.Ports)
 		if ports == "" {
 			ports = "—"
 		}
-		fmt.Fprintf(a.out, "%-18s %-8s %-12s %-18s %s\n", project.Name, project.Runtime, status, truncateColumn(ports, 18), project.Path)
+		memory := project.Memory
+		if memory == "" {
+			memory = "—"
+		}
+		cpu := "—"
+		ram := "—"
+		if stats != nil {
+			cpu = formatCPUPercent(stats.CPUPercent)
+			ram = FormatBytes(stats.MemoryUsage)
+		}
+		fmt.Fprintf(a.out, "%-18s %-8s %-12s %-18s %-10s %-8s %-10s %s\n", project.Name, project.Runtime, status, truncateColumn(ports, 18), truncateColumn(memory, 10), cpu, truncateColumn(ram, 10), project.Path)
 	}
 	return nil
 }
 
 func (a *App) RunProject(ctx context.Context, name string, cmd []string, ports PortOptions) error {
-	ports, err := normalizePortOptions(ports)
+	return a.RunProjectWithOptions(ctx, name, cmd, ProjectOptions{Ports: ports})
+}
+
+func (a *App) RunProjectWithOptions(ctx context.Context, name string, cmd []string, opts ProjectOptions) error {
+	opts, err := normalizeProjectOptions(opts)
 	if err != nil {
 		return err
 	}
@@ -604,7 +681,7 @@ func (a *App) RunProject(ctx context.Context, name string, cmd []string, ports P
 	if err != nil {
 		return err
 	}
-	if ports.List {
+	if opts.Ports.List {
 		a.printProjectPorts(project)
 		return nil
 	}
@@ -612,7 +689,7 @@ func (a *App) RunProject(ctx context.Context, name string, cmd []string, ports P
 	if err != nil {
 		return err
 	}
-	project, err = a.applyRequestedPorts(ctx, rt, project, ports)
+	project, err = a.applyRequestedProjectOptions(ctx, rt, project, opts)
 	if err != nil {
 		return err
 	}
@@ -635,6 +712,10 @@ func (a *App) RunProject(ctx context.Context, name string, cmd []string, ports P
 }
 
 func (a *App) RunDefault(ctx context.Context, ports PortOptions) error {
+	return a.RunDefaultWithOptions(ctx, ProjectOptions{Ports: ports})
+}
+
+func (a *App) RunDefaultWithOptions(ctx context.Context, opts ProjectOptions) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("get current directory: %w", err)
@@ -644,7 +725,7 @@ func (a *App) RunDefault(ctx context.Context, ports PortOptions) error {
 		return err
 	}
 	if ok {
-		return a.RunProject(ctx, project.Name, nil, ports)
+		return a.RunProjectWithOptions(ctx, project.Name, nil, opts)
 	}
 	fmt.Fprintln(a.out, "ark creates isolated development containers per project.")
 	fmt.Fprintln(a.out, "")
@@ -698,6 +779,7 @@ func (a *App) createProjectContainer(ctx context.Context, rt Runtime, project Pr
 		Env:           ProjectEnv(project, a.config),
 		Mounts:        mounts,
 		Ports:         project.Ports,
+		Memory:        project.Memory,
 		DockerEnabled: project.DockerEnabled,
 		Privileged:    a.config.Container.Privileged,
 		Network:       true,
@@ -709,24 +791,58 @@ func (a *App) createProjectContainer(ctx context.Context, rt Runtime, project Pr
 // applies the change via applyPortChange if anything differs, and returns the
 // (possibly updated) project. It is a no-op when ports.Specified is false.
 func (a *App) applyRequestedPorts(ctx context.Context, rt Runtime, project Project, ports PortOptions) (Project, error) {
-	if !ports.Specified {
-		return project, nil
-	}
-	var desired []PortMapping
-	if !ports.Clear {
-		var err error
-		desired, err = ParsePortChange(ports.Specs, project.Ports)
-		if err != nil {
-			return project, err
-		}
-	}
-	if PortMappingsEqual(project.Ports, desired) {
-		return project, nil
-	}
-	return a.applyPortChange(ctx, rt, project, desired)
+	return a.applyRequestedProjectOptions(ctx, rt, project, ProjectOptions{Ports: ports})
 }
 
 func (a *App) applyPortChange(ctx context.Context, rt Runtime, project Project, desired []PortMapping) (Project, error) {
+	return a.applyContainerConfigChange(ctx, rt, project, desired, project.Memory)
+}
+
+func (a *App) applyRequestedProjectOptions(ctx context.Context, rt Runtime, project Project, opts ProjectOptions) (Project, error) {
+	opts, err := normalizeProjectOptions(opts)
+	if err != nil {
+		return project, err
+	}
+	desiredPorts := project.Ports
+	if opts.Ports.Specified {
+		if opts.Ports.Clear {
+			desiredPorts = nil
+		} else {
+			desiredPorts, err = ParsePortChange(opts.Ports.Specs, project.Ports)
+			if err != nil {
+				return project, err
+			}
+		}
+	}
+	desiredMemory := project.Memory
+	if opts.Memory.Specified {
+		if opts.Memory.Clear {
+			desiredMemory = ""
+		} else {
+			desiredMemory, err = NormalizeMemoryLimit(opts.Memory.Limit)
+			if err != nil {
+				return project, err
+			}
+		}
+	}
+	if PortMappingsEqual(project.Ports, desiredPorts) && project.Memory == desiredMemory {
+		return project, nil
+	}
+	return a.applyContainerConfigChange(ctx, rt, project, desiredPorts, desiredMemory)
+}
+
+func (a *App) applyContainerConfigChange(ctx context.Context, rt Runtime, project Project, desiredPorts []PortMapping, desiredMemory string) (Project, error) {
+	portsChanged := !PortMappingsEqual(project.Ports, desiredPorts)
+	memoryChanged := project.Memory != desiredMemory
+	changeLabel := "container settings"
+	switch {
+	case portsChanged && memoryChanged:
+		changeLabel = "port and memory"
+	case portsChanged:
+		changeLabel = "port"
+	case memoryChanged:
+		changeLabel = "memory"
+	}
 	container, err := rt.Inspect(ctx, project.ContainerName)
 	if err != nil && !errors.Is(err, ErrNotFound) {
 		return project, err
@@ -735,10 +851,11 @@ func (a *App) applyPortChange(ctx context.Context, rt Runtime, project Project, 
 	if container != nil && container.Running {
 		if !project.AutoRecreateOnPortChange {
 			ok, err := a.confirm(fmt.Sprintf(
-				"%s is running. Changing ports recreates the container.\n"+
+				"%s is running. Changing %s recreates the container.\n"+
 					"Files in /work and your home volume are preserved. Processes running inside will stop.\n"+
 					"Continue? (remembered for this project)",
 				project.Name,
+				changeLabel,
 			))
 			if err != nil {
 				return project, err
@@ -748,7 +865,7 @@ func (a *App) applyPortChange(ctx context.Context, rt Runtime, project Project, 
 			}
 			project.AutoRecreateOnPortChange = true
 		}
-		fmt.Fprintf(a.out, "Recreating %s for port change...\n", project.Name)
+		fmt.Fprintf(a.out, "Recreating %s for %s change...\n", project.Name, changeLabel)
 		if err := rt.Stop(ctx, project.ContainerName, 10); err != nil && !errors.Is(err, ErrNotFound) {
 			return project, err
 		}
@@ -761,7 +878,8 @@ func (a *App) applyPortChange(ctx context.Context, rt Runtime, project Project, 
 		}
 	}
 
-	project.Ports = desired
+	project.Ports = desiredPorts
+	project.Memory = desiredMemory
 
 	for _, volumeName := range projectVolumeNames(project) {
 		if err := rt.CreateVolume(ctx, volumeName); err != nil {
@@ -833,11 +951,16 @@ func (a *App) printProjectHelp(ctx context.Context, name string) error {
 	if ports == "" {
 		ports = "\u2014"
 	}
+	memory := project.Memory
+	if memory == "" {
+		memory = "\u2014"
+	}
 	fmt.Fprintf(a.out, "ark %s \u2014 enter or run in project %q\n\n", name, name)
 	fmt.Fprintln(a.out, "CURRENT")
 	fmt.Fprintf(a.out, "  Status:    %s\n", a.projectHelpStatus(ctx, project))
 	fmt.Fprintf(a.out, "  Path:      %s\n", project.Path)
-	fmt.Fprintf(a.out, "  Ports:     %s\n\n", ports)
+	fmt.Fprintf(a.out, "  Ports:     %s\n", ports)
+	fmt.Fprintf(a.out, "  Memory:    %s\n\n", memory)
 	fmt.Fprintln(a.out, "USAGE")
 	fmt.Fprintf(a.out, "  ark %s                    enter the project shell\n", name)
 	fmt.Fprintf(a.out, "  ark %s <cmd...>           run a command in the project\n", name)
@@ -846,6 +969,8 @@ func (a *App) printProjectHelp(ctx context.Context, name string) error {
 	fmt.Fprintf(a.out, "  ark %s --port =3000       replace all ports\n", name)
 	fmt.Fprintf(a.out, "  ark %s --ports            show this project's ports\n", name)
 	fmt.Fprintf(a.out, "  ark %s --no-ports         clear all ports\n\n", name)
+	fmt.Fprintf(a.out, "  ark %s --memory 4g        set memory limit\n", name)
+	fmt.Fprintf(a.out, "  ark %s --no-memory        clear memory limit\n\n", name)
 	fmt.Fprintln(a.out, "See \"ark --help\" for project management commands.")
 	return nil
 }

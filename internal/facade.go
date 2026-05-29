@@ -16,6 +16,7 @@ import (
 	pathspkg "github.com/Dave-lab12/ark/internal/paths"
 	portspkg "github.com/Dave-lab12/ark/internal/ports"
 	projectpkg "github.com/Dave-lab12/ark/internal/project"
+	resourcespkg "github.com/Dave-lab12/ark/internal/resources"
 	runtimepkg "github.com/Dave-lab12/ark/internal/runtime"
 )
 
@@ -114,6 +115,14 @@ func PortMappingsEqual(a, b []PortMapping) bool { return portspkg.PortMappingsEq
 func FormatPortMapping(p PortMapping) string { return portspkg.FormatPortMapping(p) }
 
 func FormatPortList(ports []PortMapping) string { return portspkg.FormatPortList(ports) }
+
+func NormalizeMemoryLimit(spec string) (string, error) {
+	return resourcespkg.NormalizeMemoryLimit(spec)
+}
+
+func FormatBytes(bytes uint64) string {
+	return resourcespkg.FormatBytes(bytes)
+}
 
 func ResolveEditorBinary(name string) (string, error) { return editorpkg.ResolveEditorBinary(name) }
 
