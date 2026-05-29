@@ -128,6 +128,7 @@ func (a *App) rootCommand(ctx context.Context) *cobra.Command {
 	root.AddCommand(a.doctorCommand())
 	root.AddCommand(a.updateCommand())
 	root.AddCommand(a.versionCommand())
+	root.AddCommand(a.gitBrokerCommand())
 	return root
 }
 
@@ -140,6 +141,17 @@ func (a *App) versionCommand() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			fmt.Fprintln(a.out, VersionString())
 			return nil
+		},
+	}
+}
+
+func (a *App) gitBrokerCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:    "git-broker <name>",
+		Hidden: true,
+		Args:   cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return a.RunGitBroker(cmd.Context(), args[0])
 		},
 	}
 }

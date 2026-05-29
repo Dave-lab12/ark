@@ -3,6 +3,7 @@ package internal
 import (
 	"bytes"
 	"context"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -19,10 +20,44 @@ func TestVersionStringIncludesBuildNumber(t *testing.T) {
 
 func TestVersionStringDefaultsEmptyValues(t *testing.T) {
 	restoreVersion(t)
+	stubBuildInfo(t, nil)
 	ArkVersion = ""
 	ArkBuild = ""
 
 	if got, want := VersionString(), "ark dev (build dev)"; got != want {
+		t.Fatalf("VersionString() = %q, want %q", got, want)
+	}
+}
+
+func TestVersionStringUsesVCSBuildInfoForSourceBuilds(t *testing.T) {
+	restoreVersion(t)
+	stubBuildInfo(t, &debug.BuildInfo{
+		Main: debug.Module{Version: "(devel)"},
+		Settings: []debug.BuildSetting{
+			{Key: "vcs.revision", Value: "70f0794123456789"},
+			{Key: "vcs.modified", Value: "true"},
+		},
+	})
+	ArkVersion = "dev"
+	ArkBuild = "dev"
+
+	if got, want := VersionString(), "ark source (build 70f079412345-dirty)"; got != want {
+		t.Fatalf("VersionString() = %q, want %q", got, want)
+	}
+}
+
+func TestVersionStringUsesModuleVersionWhenAvailable(t *testing.T) {
+	restoreVersion(t)
+	stubBuildInfo(t, &debug.BuildInfo{
+		Main: debug.Module{Version: "v1.2.3"},
+		Settings: []debug.BuildSetting{
+			{Key: "vcs.revision", Value: "70f0794123456789"},
+		},
+	})
+	ArkVersion = "dev"
+	ArkBuild = "dev"
+
+	if got, want := VersionString(), "ark v1.2.3 (build 70f079412345)"; got != want {
 		t.Fatalf("VersionString() = %q, want %q", got, want)
 	}
 }
@@ -82,8 +117,17 @@ func restoreVersion(t *testing.T) {
 	t.Helper()
 	version := ArkVersion
 	build := ArkBuild
+	buildInfo := readBuildInfo
 	t.Cleanup(func() {
 		ArkVersion = version
 		ArkBuild = build
+		readBuildInfo = buildInfo
 	})
+}
+
+func stubBuildInfo(t *testing.T, info *debug.BuildInfo) {
+	t.Helper()
+	readBuildInfo = func() (*debug.BuildInfo, bool) {
+		return info, info != nil
+	}
 }

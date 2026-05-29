@@ -376,6 +376,9 @@ container git
 
 **What this means in practice:** `git clone`, `git push`, and `git pull` work normally inside your container. Your SSH private keys and agent are never mounted or accessible from within the container.
 
+`ark edit` also starts the Git broker for editor sessions, so VS Code/Cursor
+Git actions such as fetch, pull, and push use the same brokered SSH path.
+
 **Allowed Git hosts by default:**
 
 - `github.com`

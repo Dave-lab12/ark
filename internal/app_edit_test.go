@@ -49,6 +49,37 @@ func TestEditProjectLaunchesEditorWithRemoteAuthority(t *testing.T) {
 	}
 }
 
+func TestEditProjectStartsEditorGitBroker(t *testing.T) {
+	ctx := context.Background()
+	rt := &fakePortRuntime{
+		inspectResults: []*Container{{Running: true, Status: "running"}},
+	}
+	project := testProject(t, nil, false)
+	project.SSHEnabled = true
+	app, _, _ := newPortTestApp(t, "", project, rt)
+	app.config.Editor.Default = fakeEditorBinary(t, "code")
+	app.config.Git.Enabled = true
+
+	prevLaunch := launchEditor
+	t.Cleanup(func() { launchEditor = prevLaunch })
+	launchEditor = func(string, string, string) error { return nil }
+
+	prevBroker := startEditorGitBrokerProcess
+	t.Cleanup(func() { startEditorGitBrokerProcess = prevBroker })
+	var brokerProject string
+	startEditorGitBrokerProcess = func(_ *App, _ context.Context, project Project) error {
+		brokerProject = project.Name
+		return nil
+	}
+
+	if err := app.EditProject(ctx, project.Name, EditOptions{}); err != nil {
+		t.Fatalf("EditProject: %v", err)
+	}
+	if brokerProject != project.Name {
+		t.Fatalf("broker started for %q, want %q", brokerProject, project.Name)
+	}
+}
+
 func TestEditProjectStartsStoppedContainer(t *testing.T) {
 	ctx := context.Background()
 	rt := &fakePortRuntime{

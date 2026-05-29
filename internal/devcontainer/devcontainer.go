@@ -24,10 +24,11 @@ type generatedDevcontainer struct {
 }
 
 type DevcontainerRenderOptions struct {
-	ImageTag         string
-	ImageFingerprint string
-	ArkVersion       string
-	WorkspaceFolder  string
+	ImageTag           string
+	ImageFingerprint   string
+	ArkVersion         string
+	WorkspaceFolder    string
+	ControlPlaneSource string
 }
 
 // BuildDevcontainer renders the devcontainer.json content for a project.
@@ -66,7 +67,7 @@ func BuildDevcontainer(project Project, config Config, opts DevcontainerRenderOp
 		// starts dockerd, writes /run/ark/ready, etc.
 		OverrideCommand: false,
 		Privileged:      config.Container.Privileged,
-		Mounts:          devcontainerMounts(project),
+		Mounts:          devcontainerMounts(project, opts.ControlPlaneSource),
 		ForwardPorts:    devcontainerForwardPorts(project),
 		AppPort:         devcontainerAppPorts(project),
 		ContainerEnv:    devcontainerEnv(project, config),
@@ -85,10 +86,16 @@ func BuildDevcontainer(project Project, config Config, opts DevcontainerRenderOp
 	return append(data, '\n'), nil
 }
 
-func devcontainerMounts(p Project) []string {
+func devcontainerMounts(p Project, controlPlaneSource string) []string {
 	mounts := []string{
 		fmt.Sprintf("source=%s,target=/home/dev,type=volume", p.Volumes.Home),
 		fmt.Sprintf("source=%s,target=/home/dev/.cache,type=volume", p.Volumes.Cache),
+	}
+	if p.SSHEnabled && strings.TrimSpace(controlPlaneSource) != "" {
+		mounts = append(mounts, fmt.Sprintf(
+			"source=%s,target=/run/ark,type=bind",
+			strings.TrimSpace(controlPlaneSource),
+		))
 	}
 	// Don't share /var/lib/docker with ark's directly-managed container.
 	// Two dockerd processes on one graph backend will corrupt it. Native
@@ -150,21 +157,11 @@ func devcontainerAppPorts(p Project) []any {
 	return out
 }
 
-// devcontainerEnv reuses ark's existing environment builder where possible.
-// Git broker integration requires a long-lived broker and an Ark
-// control-plane mount; native devcontainers are editor-owned, so those
-// broker-specific variables are intentionally omitted for now.
 func devcontainerEnv(project Project, config Config) map[string]string {
 	env := map[string]string{}
 	for _, pair := range ProjectEnv(project, config) {
 		k, v, ok := strings.Cut(pair, "=")
 		if !ok {
-			continue
-		}
-		if k == "GIT_SSH_COMMAND" {
-			continue
-		}
-		if strings.HasPrefix(k, "ARK_GIT_BROKER_") {
 			continue
 		}
 		env[k] = v

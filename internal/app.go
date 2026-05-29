@@ -9,10 +9,14 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/term"
@@ -31,6 +35,8 @@ type App struct {
 	stdin         *os.File
 	stdout        *os.File
 }
+
+var startEditorGitBrokerProcess = (*App).startEditorGitBrokerProcess
 
 type InitOptions struct {
 	Runtime       string
@@ -392,6 +398,9 @@ func (a *App) editProjectAttach(ctx context.Context, rt Runtime, project Project
 	if err := a.ensureStarted(ctx, rt, project); err != nil {
 		return err
 	}
+	if err := startEditorGitBrokerProcess(a, ctx, project); err != nil {
+		return err
+	}
 
 	folder := resolveContainerFolder(opts.Folder, a.config.Container.Workdir)
 	remote := BuildRemoteAuthority(project.ContainerName)
@@ -433,10 +442,11 @@ func (a *App) editProjectNative(ctx context.Context, rt Runtime, project Project
 	}
 
 	data, err := BuildDevcontainer(project, a.config, DevcontainerRenderOptions{
-		ImageTag:         imageInfo.Tag,
-		ImageFingerprint: imageInfo.Fingerprint,
-		ArkVersion:       ArkVersion,
-		WorkspaceFolder:  workspaceFolder,
+		ImageTag:           imageInfo.Tag,
+		ImageFingerprint:   imageInfo.Fingerprint,
+		ArkVersion:         ArkVersion,
+		WorkspaceFolder:    workspaceFolder,
+		ControlPlaneSource: a.paths.ProjectSocketDir(project),
 	})
 	if err != nil {
 		return err
@@ -451,6 +461,9 @@ func (a *App) editProjectNative(ctx context.Context, rt Runtime, project Project
 		fmt.Fprintf(a.errOut, "ark: could not update .git/info/exclude: %v\n", err)
 	}
 
+	if err := startEditorGitBrokerProcess(a, ctx, project); err != nil {
+		return err
+	}
 	if err := launchEditorPath(binary, project.Path); err != nil {
 		return err
 	}
@@ -491,9 +504,10 @@ func (a *App) DevcontainerWrite(ctx context.Context, name string, inProject bool
 	}
 
 	data, err := BuildDevcontainer(project, a.config, DevcontainerRenderOptions{
-		ImageTag:         imageInfo.Tag,
-		ImageFingerprint: imageInfo.Fingerprint,
-		ArkVersion:       ArkVersion,
+		ImageTag:           imageInfo.Tag,
+		ImageFingerprint:   imageInfo.Fingerprint,
+		ArkVersion:         ArkVersion,
+		ControlPlaneSource: a.paths.ProjectSocketDir(project),
 	})
 	if err != nil {
 		return err
@@ -1278,6 +1292,87 @@ func (a *App) startGitBroker(ctx context.Context, project Project) (*GitBroker, 
 	}
 	socketPath := filepath.Join(a.paths.ProjectSocketDir(project), filepath.Base(a.config.Git.BrokerSocket))
 	return StartGitBroker(ctx, socketPath, a.config.Git.Hosts, a.errOut)
+}
+
+func (a *App) RunGitBroker(ctx context.Context, name string) error {
+	project, err := a.registry.Project(ctx, name)
+	if err != nil {
+		return err
+	}
+	if !project.SSHEnabled || !a.config.Git.Enabled {
+		return fmt.Errorf("git broker is disabled for project %s", project.Name)
+	}
+	broker, err := a.startGitBroker(ctx, project)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := broker.Close(); err != nil {
+			slog.Warn("close Git broker", "project", project.Name, "error", err)
+		}
+	}()
+
+	signalCtx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	<-signalCtx.Done()
+	return nil
+}
+
+func (a *App) startEditorGitBrokerProcess(ctx context.Context, project Project) error {
+	if !project.SSHEnabled || !a.config.Git.Enabled {
+		return nil
+	}
+	if err := ensureProjectControlPlane(a.paths, project); err != nil {
+		return err
+	}
+	socketPath := filepath.Join(a.paths.ProjectSocketDir(project), filepath.Base(a.config.Git.BrokerSocket))
+	if brokerSocketReachable(socketPath) {
+		return nil
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("resolve ark executable: %w", err)
+	}
+	cmd := exec.Command(exe, "git-broker", project.Name)
+	cmd.Stdin = nil
+	logFile, err := os.OpenFile(filepath.Join(a.paths.LogsDir, "git-broker-"+project.ID+".log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err == nil {
+		defer logFile.Close()
+		cmd.Stdout = logFile
+		cmd.Stderr = logFile
+	} else {
+		cmd.Stdout = io.Discard
+		cmd.Stderr = io.Discard
+	}
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start Git broker for editor: %w", err)
+	}
+	if err := cmd.Process.Release(); err != nil {
+		return fmt.Errorf("release Git broker process: %w", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if brokerSocketReachable(socketPath) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(50 * time.Millisecond):
+		}
+	}
+	return fmt.Errorf("Git broker did not become ready at %s", socketPath)
+}
+
+func brokerSocketReachable(socketPath string) bool {
+	conn, err := net.DialTimeout("unix", socketPath, 200*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = conn.Close()
+	return true
 }
 
 func (a *App) touchProject(ctx context.Context, name string) error {
