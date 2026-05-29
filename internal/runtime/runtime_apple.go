@@ -43,6 +43,18 @@ func (r *AppleRuntime) Stats(context.Context, string) (*ResourceStats, error) {
 	return nil, r.notSupported("stats")
 }
 func (r *AppleRuntime) List(context.Context) ([]Container, error) { return nil, r.notSupported("list") }
+func (r *AppleRuntime) EnsureNetwork(context.Context, string) error {
+	return r.notSupported("ensure network")
+}
+func (r *AppleRuntime) ConnectNetwork(context.Context, NetworkConnectSpec) error {
+	return r.notSupported("connect network")
+}
+func (r *AppleRuntime) DisconnectNetwork(context.Context, string, string) error {
+	return r.notSupported("disconnect network")
+}
+func (r *AppleRuntime) ListNetworkGroups(context.Context) ([]NetworkGroup, error) {
+	return nil, r.notSupported("list networks")
+}
 func (r *AppleRuntime) CreateVolume(context.Context, string) error {
 	return r.notSupported("create volume")
 }

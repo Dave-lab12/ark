@@ -23,6 +23,11 @@ type Runtime interface {
 	Stats(ctx context.Context, containerName string) (*ResourceStats, error)
 	List(ctx context.Context) ([]Container, error)
 
+	EnsureNetwork(ctx context.Context, networkName string) error
+	ConnectNetwork(ctx context.Context, spec NetworkConnectSpec) error
+	DisconnectNetwork(ctx context.Context, networkName, containerName string) error
+	ListNetworkGroups(ctx context.Context) ([]NetworkGroup, error)
+
 	CreateVolume(ctx context.Context, name string) error
 	RemoveVolume(ctx context.Context, name string) error
 }

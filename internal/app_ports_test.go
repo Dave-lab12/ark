@@ -372,7 +372,7 @@ func TestListProjectsIncludesPortsColumn(t *testing.T) {
 	project.Memory = "4g"
 	rt := &fakePortRuntime{
 		inspectResults: []*Container{{Running: true, Status: "running"}},
-		statsResults:   []*ResourceStats{{CPUPercent: 12.5, MemoryUsage: 128 * 1024 * 1024}},
+		networkGroups:  []NetworkGroup{{Name: "mindplex", NetworkName: "ark-mindplex", Containers: []string{"ark-test-container"}}},
 	}
 	app, out, _ := newPortTestApp(t, "", project, rt)
 
@@ -381,13 +381,19 @@ func TestListProjectsIncludesPortsColumn(t *testing.T) {
 	}
 
 	got := out.String()
-	for _, want := range []string{"PORTS", "LIMIT", "CPU", "RAM", "3000", "4g", "12.5%", "128MiB"} {
+	for _, want := range []string{"PORTS", "GROUPS", "LIMIT", "3000", "mindplex", "4g"} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("list output missing %q:\n%s", want, got)
 		}
 	}
-	if !reflect.DeepEqual(rt.calls, []string{"Inspect", "Stats"}) {
-		t.Fatalf("calls mismatch:\n got: %v\nwant: %v", rt.calls, []string{"Inspect", "Stats"})
+	for _, notWant := range []string{"CPU", "RAM", "12.5%", "128MiB"} {
+		if strings.Contains(got, notWant) {
+			t.Fatalf("list output unexpectedly contains %q:\n%s", notWant, got)
+		}
+	}
+	wantCalls := []string{"ListNetworkGroups", "Inspect"}
+	if !reflect.DeepEqual(rt.calls, wantCalls) {
+		t.Fatalf("calls mismatch:\n got: %v\nwant: %v", rt.calls, wantCalls)
 	}
 }
 
@@ -405,8 +411,55 @@ func TestListProjectsSkipsStatsForStoppedContainers(t *testing.T) {
 	if strings.Contains(out.String(), "0.0%") {
 		t.Fatalf("stopped container should not show live stats:\n%s", out.String())
 	}
-	if !reflect.DeepEqual(rt.calls, []string{"Inspect"}) {
-		t.Fatalf("calls mismatch:\n got: %v\nwant: %v", rt.calls, []string{"Inspect"})
+	wantCalls := []string{"ListNetworkGroups", "Inspect"}
+	if !reflect.DeepEqual(rt.calls, wantCalls) {
+		t.Fatalf("calls mismatch:\n got: %v\nwant: %v", rt.calls, wantCalls)
+	}
+}
+
+func TestListProjectStatsShowsLiveUsage(t *testing.T) {
+	ctx := context.Background()
+	project := testProject(t, nil, false)
+	project.Memory = "4g"
+	rt := &fakePortRuntime{
+		inspectResults: []*Container{{Running: true, Status: "running"}},
+		statsResults:   []*ResourceStats{{CPUPercent: 12.5, MemoryUsage: 128 * 1024 * 1024}},
+	}
+	app, out, _ := newPortTestApp(t, "", project, rt)
+
+	if err := app.ListProjectStats(ctx, nil); err != nil {
+		t.Fatalf("ListProjectStats: %v", err)
+	}
+
+	got := out.String()
+	for _, want := range []string{"NAME", "STATUS", "CPU", "RAM", "LIMIT", "app", "running", "12.5%", "128MiB", "4g"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("stats output missing %q:\n%s", want, got)
+		}
+	}
+	wantCalls := []string{"Inspect", "Stats"}
+	if !reflect.DeepEqual(rt.calls, wantCalls) {
+		t.Fatalf("calls mismatch:\n got: %v\nwant: %v", rt.calls, wantCalls)
+	}
+}
+
+func TestListProjectStatsSkipsStatsForStoppedContainers(t *testing.T) {
+	ctx := context.Background()
+	rt := &fakePortRuntime{
+		inspectResults: []*Container{{Running: false, Status: "exited"}},
+	}
+	app, out, _ := newPortTestApp(t, "", testProject(t, nil, false), rt)
+
+	if err := app.ListProjectStats(ctx, []string{"app"}); err != nil {
+		t.Fatalf("ListProjectStats: %v", err)
+	}
+
+	if strings.Contains(out.String(), "0.0%") {
+		t.Fatalf("stopped container should not show live stats:\n%s", out.String())
+	}
+	wantCalls := []string{"Inspect"}
+	if !reflect.DeepEqual(rt.calls, wantCalls) {
+		t.Fatalf("calls mismatch:\n got: %v\nwant: %v", rt.calls, wantCalls)
 	}
 }
 
@@ -457,16 +510,108 @@ func TestParseProjectOptionsFromArgsStripsMemoryFlags(t *testing.T) {
 	}
 }
 
+func TestCreateNetworkGroup(t *testing.T) {
+	ctx := context.Background()
+	rt := &fakePortRuntime{}
+	app, out, _ := newPortTestApp(t, "", testProject(t, nil, false), rt)
+
+	if err := app.CreateNetworkGroup(ctx, "mindplex"); err != nil {
+		t.Fatalf("CreateNetworkGroup: %v", err)
+	}
+
+	if !reflect.DeepEqual(rt.networkCreates, []string{"ark-mindplex"}) {
+		t.Fatalf("networkCreates = %v", rt.networkCreates)
+	}
+	if !strings.Contains(out.String(), "Created network group mindplex") {
+		t.Fatalf("unexpected output: %q", out.String())
+	}
+}
+
+func TestListNetworkGroups(t *testing.T) {
+	ctx := context.Background()
+	rt := &fakePortRuntime{
+		networkGroups: []NetworkGroup{
+			{Name: "mindplex", NetworkName: "ark-mindplex", Containers: []string{"ark-test-container"}},
+		},
+	}
+	app, out, _ := newPortTestApp(t, "", testProject(t, nil, false), rt)
+
+	if err := app.ListNetworkGroups(ctx); err != nil {
+		t.Fatalf("ListNetworkGroups: %v", err)
+	}
+
+	got := out.String()
+	for _, want := range []string{"GROUP", "NETWORK", "PROJECTS", "mindplex", "ark-mindplex", "app"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("network list missing %q:\n%s", want, got)
+		}
+	}
+	if !reflect.DeepEqual(rt.calls, []string{"ListNetworkGroups"}) {
+		t.Fatalf("calls = %v", rt.calls)
+	}
+}
+
+func TestAddProjectsToNetworkGroup(t *testing.T) {
+	ctx := context.Background()
+	rt := &fakePortRuntime{}
+	app, out, _ := newPortTestApp(t, "", testProject(t, nil, false), rt)
+
+	if err := app.AddProjectsToNetworkGroup(ctx, "mindplex", []string{"app"}); err != nil {
+		t.Fatalf("AddProjectsToNetworkGroup: %v", err)
+	}
+
+	if !reflect.DeepEqual(rt.networkCreates, []string{"ark-mindplex"}) {
+		t.Fatalf("networkCreates = %v", rt.networkCreates)
+	}
+	if len(rt.networkConnects) != 1 {
+		t.Fatalf("networkConnects = %#v", rt.networkConnects)
+	}
+	connect := rt.networkConnects[0]
+	if connect.NetworkName != "ark-mindplex" || connect.ContainerName != "ark-test-container" || !reflect.DeepEqual(connect.Aliases, []string{"app"}) {
+		t.Fatalf("connect spec = %#v", connect)
+	}
+	if !strings.Contains(out.String(), "Added app to network group mindplex") {
+		t.Fatalf("unexpected output: %q", out.String())
+	}
+}
+
+func TestRemoveProjectsFromNetworkGroup(t *testing.T) {
+	ctx := context.Background()
+	rt := &fakePortRuntime{}
+	app, out, _ := newPortTestApp(t, "", testProject(t, nil, false), rt)
+
+	if err := app.RemoveProjectsFromNetworkGroup(ctx, "mindplex", []string{"app"}); err != nil {
+		t.Fatalf("RemoveProjectsFromNetworkGroup: %v", err)
+	}
+
+	if !reflect.DeepEqual(rt.networkDisconnects, []string{"ark-mindplex/ark-test-container"}) {
+		t.Fatalf("networkDisconnects = %v", rt.networkDisconnects)
+	}
+	if !strings.Contains(out.String(), "Removed app from network group mindplex") {
+		t.Fatalf("unexpected output: %q", out.String())
+	}
+}
+
+func TestNetworkGroupRejectsInvalidName(t *testing.T) {
+	if _, err := arkNetworkName("mind plex"); err == nil {
+		t.Fatalf("expected invalid network group name")
+	}
+}
+
 type fakePortRuntime struct {
-	inspectResults []*Container
-	statsResults   []*ResourceStats
-	createSpecs    []CreateSpec
-	calls          []string
-	createdVolumes []string
-	imageExists    bool
-	imageExistsSet bool
-	imageExistsTag []string
-	buildImageSpec []BuildImageSpec
+	inspectResults     []*Container
+	statsResults       []*ResourceStats
+	createSpecs        []CreateSpec
+	calls              []string
+	createdVolumes     []string
+	networkCreates     []string
+	networkConnects    []NetworkConnectSpec
+	networkDisconnects []string
+	networkGroups      []NetworkGroup
+	imageExists        bool
+	imageExistsSet     bool
+	imageExistsTag     []string
+	buildImageSpec     []BuildImageSpec
 }
 
 func (f *fakePortRuntime) Name() string {
@@ -538,6 +683,29 @@ func (f *fakePortRuntime) Stats(context.Context, string) (*ResourceStats, error)
 
 func (f *fakePortRuntime) List(context.Context) ([]Container, error) {
 	return nil, nil
+}
+
+func (f *fakePortRuntime) EnsureNetwork(_ context.Context, name string) error {
+	f.calls = append(f.calls, "EnsureNetwork")
+	f.networkCreates = append(f.networkCreates, name)
+	return nil
+}
+
+func (f *fakePortRuntime) ConnectNetwork(_ context.Context, spec NetworkConnectSpec) error {
+	f.calls = append(f.calls, "ConnectNetwork")
+	f.networkConnects = append(f.networkConnects, spec)
+	return nil
+}
+
+func (f *fakePortRuntime) DisconnectNetwork(_ context.Context, networkName, containerName string) error {
+	f.calls = append(f.calls, "DisconnectNetwork")
+	f.networkDisconnects = append(f.networkDisconnects, networkName+"/"+containerName)
+	return nil
+}
+
+func (f *fakePortRuntime) ListNetworkGroups(context.Context) ([]NetworkGroup, error) {
+	f.calls = append(f.calls, "ListNetworkGroups")
+	return f.networkGroups, nil
 }
 
 func (f *fakePortRuntime) CreateVolume(_ context.Context, name string) error {

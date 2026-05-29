@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 
@@ -26,9 +27,10 @@ import (
 )
 
 const (
-	dockerLabelManaged = "ark.managed"
-	dockerLabelProject = "ark.project"
-	dockerLabelID      = "ark.project_id"
+	dockerLabelManaged      = "ark.managed"
+	dockerLabelProject      = "ark.project"
+	dockerLabelID           = "ark.project_id"
+	dockerLabelNetworkGroup = "ark.network_group"
 )
 
 type DockerRuntime struct {
@@ -419,6 +421,91 @@ func (r *DockerRuntime) List(ctx context.Context) ([]Container, error) {
 		})
 	}
 	return out, nil
+}
+
+func (r *DockerRuntime) EnsureNetwork(ctx context.Context, networkName string) error {
+	if _, err := r.client.NetworkInspect(ctx, networkName, types.NetworkInspectOptions{}); err == nil {
+		return nil
+	} else if !errdefs.IsNotFound(err) {
+		return fmt.Errorf("inspect network %s: %w", networkName, err)
+	}
+	if _, err := r.client.NetworkCreate(ctx, networkName, types.NetworkCreate{
+		Driver:         "bridge",
+		CheckDuplicate: true,
+		Labels: map[string]string{
+			dockerLabelManaged:      "true",
+			dockerLabelNetworkGroup: networkGroupNameFromNetwork(networkName),
+		},
+	}); err != nil {
+		if errdefs.IsConflict(err) {
+			return nil
+		}
+		return fmt.Errorf("create network %s: %w", networkName, err)
+	}
+	return nil
+}
+
+func networkGroupNameFromNetwork(networkName string) string {
+	return strings.TrimPrefix(networkName, "ark-")
+}
+
+func (r *DockerRuntime) ConnectNetwork(ctx context.Context, spec NetworkConnectSpec) error {
+	if err := r.client.NetworkConnect(ctx, spec.NetworkName, spec.ContainerName, &network.EndpointSettings{
+		Aliases: spec.Aliases,
+	}); err != nil {
+		if errdefs.IsNotModified(err) || strings.Contains(err.Error(), "already exists") {
+			return nil
+		}
+		return fmt.Errorf("connect %s to network %s: %w", spec.ContainerName, spec.NetworkName, err)
+	}
+	return nil
+}
+
+func (r *DockerRuntime) DisconnectNetwork(ctx context.Context, networkName, containerName string) error {
+	if err := r.client.NetworkDisconnect(ctx, networkName, containerName, false); err != nil {
+		if errdefs.IsNotFound(err) || strings.Contains(err.Error(), "is not connected") {
+			return nil
+		}
+		return fmt.Errorf("disconnect %s from network %s: %w", containerName, networkName, err)
+	}
+	return nil
+}
+
+func (r *DockerRuntime) ListNetworkGroups(ctx context.Context) ([]NetworkGroup, error) {
+	networks, err := r.client.NetworkList(ctx, types.NetworkListOptions{
+		Filters: filters.NewArgs(
+			filters.Arg("label", dockerLabelManaged+"=true"),
+			filters.Arg("label", dockerLabelNetworkGroup),
+		),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list networks: %w", err)
+	}
+	groups := make([]NetworkGroup, 0, len(networks))
+	for _, networkSummary := range networks {
+		networkInfo, err := r.client.NetworkInspect(ctx, networkSummary.ID, types.NetworkInspectOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("inspect network %s: %w", networkSummary.Name, err)
+		}
+		groupName := networkInfo.Labels[dockerLabelNetworkGroup]
+		if groupName == "" {
+			groupName = networkGroupNameFromNetwork(networkInfo.Name)
+		}
+		group := NetworkGroup{
+			Name:        groupName,
+			NetworkName: networkInfo.Name,
+			Containers:  make([]string, 0, len(networkInfo.Containers)),
+		}
+		for _, endpoint := range networkInfo.Containers {
+			group.Containers = append(group.Containers, endpoint.Name)
+		}
+		sort.Strings(group.Containers)
+		groups = append(groups, group)
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		return groups[i].Name < groups[j].Name
+	})
+	return groups, nil
 }
 
 func (r *DockerRuntime) CreateVolume(ctx context.Context, name string) error {
