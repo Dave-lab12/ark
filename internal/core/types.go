@@ -32,6 +32,7 @@ type Project struct {
 	ImageFingerprint         string        `json:"image_fingerprint"`
 	Volumes                  Volumes       `json:"volumes"`
 	Ports                    []PortMapping `json:"ports,omitempty"`
+	Memory                   string        `json:"memory,omitempty"`
 	AutoRecreateOnPortChange bool          `json:"auto_recreate_on_port_change,omitempty"`
 	SSHEnabled               bool          `json:"ssh_enabled"`
 	DockerEnabled            bool          `json:"docker_enabled"`
@@ -62,6 +63,12 @@ type Container struct {
 	Ports   []PortMapping
 }
 
+type ResourceStats struct {
+	CPUPercent  float64
+	MemoryUsage uint64
+	MemoryLimit uint64
+}
+
 type BuildImageSpec struct {
 	ContextDir string
 	Dockerfile string
@@ -81,6 +88,7 @@ type CreateSpec struct {
 	Env           []string
 	Mounts        []MountSpec
 	Ports         []PortMapping
+	Memory        string
 	DockerEnabled bool
 	Privileged    bool
 	Network       bool

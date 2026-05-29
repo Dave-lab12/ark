@@ -12,9 +12,11 @@ import (
 )
 
 const (
-	flagPort    = "port"
-	flagNoPorts = "no-ports"
-	flagPorts   = "ports"
+	flagPort     = "port"
+	flagNoPorts  = "no-ports"
+	flagPorts    = "ports"
+	flagMemory   = "memory"
+	flagNoMemory = "no-memory"
 )
 
 func Main(ctx context.Context, args []string) int {
@@ -50,11 +52,11 @@ func (a *App) Execute(ctx context.Context, args []string) error {
 		if len(args) >= 2 && isHelpArg(args[1]) {
 			return a.printProjectHelp(ctx, args[0])
 		}
-		cmdArgs, ports, err := parsePortOptionsFromArgs(args[1:])
+		cmdArgs, projectOpts, err := parseProjectOptionsFromArgs(args[1:])
 		if err != nil {
 			return err
 		}
-		return a.RunProject(ctx, args[0], cmdArgs, ports)
+		return a.RunProjectWithOptions(ctx, args[0], cmdArgs, projectOpts)
 	}
 	root.SetArgs(args)
 	return root.ExecuteContext(ctx)
@@ -77,6 +79,7 @@ func collectReservedNames(root *cobra.Command) map[string]struct{} {
 func (a *App) rootCommand(ctx context.Context) *cobra.Command {
 	var printVersion bool
 	var ports PortOptions
+	var memory MemoryOptions
 	root := &cobra.Command{
 		Use:           "ark",
 		Short:         "Isolated development containers per project",
@@ -87,14 +90,14 @@ func (a *App) rootCommand(ctx context.Context) *cobra.Command {
 				fmt.Fprintln(a.out, VersionString())
 				return nil
 			}
-			normalizedPorts, err := normalizePortOptions(ports)
+			projectOpts, err := normalizeProjectOptions(ProjectOptions{Ports: ports, Memory: memory})
 			if err != nil {
 				return err
 			}
 			if len(args) > 0 {
-				return a.RunProject(cmd.Context(), args[0], args[1:], normalizedPorts)
+				return a.RunProjectWithOptions(cmd.Context(), args[0], args[1:], projectOpts)
 			}
-			return a.RunDefault(cmd.Context(), normalizedPorts)
+			return a.RunDefaultWithOptions(cmd.Context(), projectOpts)
 		},
 	}
 	root.SetIn(a.in)
@@ -107,6 +110,7 @@ func (a *App) rootCommand(ctx context.Context) *cobra.Command {
 	root.SetHelpFunc(a.helpFunc)
 	root.Flags().BoolVarP(&printVersion, "version", "v", false, "print version and build number")
 	addPortFlags(root, &ports)
+	addMemoryFlags(root, &memory)
 
 	root.AddCommand(a.initCommand())
 	root.AddCommand(a.startCommand())
@@ -160,6 +164,11 @@ func (a *App) initCommand() *cobra.Command {
 				return err
 			}
 			opts.Ports = ports
+			memory, err := normalizeMemoryOptions(opts.Memory)
+			if err != nil {
+				return err
+			}
+			opts.Memory = memory
 			return a.InitProject(cmd.Context(), args[0], opts)
 		},
 	}
@@ -167,6 +176,7 @@ func (a *App) initCommand() *cobra.Command {
 	cmd.Flags().BoolVar(&noSSH, "no-ssh", false, "disable Git-over-SSH broker support for this project")
 	cmd.Flags().BoolVar(&noDocker, "no-docker", false, "disable Docker-in-container for this project")
 	addPortFlags(cmd, &opts.Ports)
+	addMemoryFlags(cmd, &opts.Memory)
 	return cmd
 }
 
@@ -193,20 +203,22 @@ func (a *App) devcontainerCommand() *cobra.Command {
 
 func (a *App) startCommand() *cobra.Command {
 	var ports PortOptions
+	var memory MemoryOptions
 	cmd := &cobra.Command{
 		Use:     "start <name>",
 		Short:   "start a project without entering",
 		GroupID: "projects",
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			ports, err := normalizePortOptions(ports)
+			projectOpts, err := normalizeProjectOptions(ProjectOptions{Ports: ports, Memory: memory})
 			if err != nil {
 				return err
 			}
-			return a.StartProject(cmd.Context(), args[0], false, ports)
+			return a.StartProjectWithOptions(cmd.Context(), args[0], false, projectOpts)
 		},
 	}
 	addPortFlags(cmd, &ports)
+	addMemoryFlags(cmd, &memory)
 	return cmd
 }
 
@@ -231,6 +243,7 @@ func (a *App) editCommand() *cobra.Command {
 	cmd.Flags().StringVar(&editor, "editor", "", "editor binary to launch (overrides [editor].default)")
 	cmd.Flags().StringVar(&opts.Folder, "folder", "", "subdirectory inside the container to open (relative to workdir, or absolute)")
 	addPortFlags(cmd, &opts.Ports)
+	addMemoryFlags(cmd, &opts.Memory)
 	return cmd
 }
 
@@ -401,6 +414,8 @@ func printRootHelp(out io.Writer, root *cobra.Command, style helpStyle) {
 	fmt.Fprintln(out, "  <name> --port =3000,8080:80  replace all ports")
 	fmt.Fprintln(out, "  <name> --ports               show this project's ports")
 	fmt.Fprintln(out, "  <name> --no-ports            clear all ports")
+	fmt.Fprintln(out, "  <name> --memory 4g           set container memory limit")
+	fmt.Fprintln(out, "  <name> --no-memory           clear container memory limit")
 	fmt.Fprintln(out, "")
 	fmt.Fprintln(out, `"ark <command> --help" for details on any command.`)
 }
@@ -517,9 +532,19 @@ func addPortFlags(cmd *cobra.Command, ports *PortOptions) {
 	cmd.Flags().BoolVar(&ports.List, flagPorts, false, "list current ports without changing them")
 }
 
+func addMemoryFlags(cmd *cobra.Command, memory *MemoryOptions) {
+	cmd.Flags().StringVar(&memory.Limit, flagMemory, "", "set container memory limit, for example 4g")
+	cmd.Flags().BoolVar(&memory.Clear, flagNoMemory, false, "remove the configured memory limit")
+}
+
 func parsePortOptionsFromArgs(args []string) ([]string, PortOptions, error) {
+	cmdArgs, opts, err := parseProjectOptionsFromArgs(args)
+	return cmdArgs, opts.Ports, err
+}
+
+func parseProjectOptionsFromArgs(args []string) ([]string, ProjectOptions, error) {
 	var cmdArgs []string
-	var ports PortOptions
+	var opts ProjectOptions
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 		switch {
@@ -528,21 +553,31 @@ func parsePortOptionsFromArgs(args []string) ([]string, PortOptions, error) {
 			i = len(args)
 		case arg == "--"+flagPort:
 			if i+1 >= len(args) {
-				return nil, ports, errors.New("flag needs an argument: --" + flagPort)
+				return nil, opts, errors.New("flag needs an argument: --" + flagPort)
 			}
-			ports.Specs = append(ports.Specs, args[i+1])
+			opts.Ports.Specs = append(opts.Ports.Specs, args[i+1])
 			i++
 		case strings.HasPrefix(arg, "--"+flagPort+"="):
-			ports.Specs = append(ports.Specs, strings.TrimPrefix(arg, "--"+flagPort+"="))
+			opts.Ports.Specs = append(opts.Ports.Specs, strings.TrimPrefix(arg, "--"+flagPort+"="))
 		case arg == "--"+flagNoPorts:
-			ports.Clear = true
+			opts.Ports.Clear = true
 		case arg == "--"+flagPorts:
-			ports.List = true
+			opts.Ports.List = true
+		case arg == "--"+flagMemory:
+			if i+1 >= len(args) {
+				return nil, opts, errors.New("flag needs an argument: --" + flagMemory)
+			}
+			opts.Memory.Limit = args[i+1]
+			i++
+		case strings.HasPrefix(arg, "--"+flagMemory+"="):
+			opts.Memory.Limit = strings.TrimPrefix(arg, "--"+flagMemory+"=")
+		case arg == "--"+flagNoMemory:
+			opts.Memory.Clear = true
 		default:
 			cmdArgs = append(cmdArgs, arg)
 		}
 	}
-	normalized, err := normalizePortOptions(ports)
+	normalized, err := normalizeProjectOptions(opts)
 	if err != nil {
 		return nil, normalized, err
 	}

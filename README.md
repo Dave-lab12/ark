@@ -104,7 +104,7 @@ ark rm myapp -f                   # delete a project
 | `ark stop <name>` | Stop a running project |
 | `ark rm <name> -f` | Delete a project and its volumes |
 | `ark rebuild <name>` | Rebuild a project's container |
-| `ark ls` | List all projects |
+| `ark ls` | List projects with status, ports, memory limit, CPU, and RAM |
 | `ark doctor` | Check your environment |
 | `ark image status` | Show base image info |
 | `ark image rebuild` | Rebuild the base image |
@@ -238,6 +238,8 @@ ark myapp --port +3000,-3001    # add and remove in one command
 ark myapp --port =3000          # replace all ports with just 3000
 ark myapp --ports               # list current ports
 ark myapp --no-ports            # clear all ports
+ark myapp --memory 4g           # recreate with a 4 GB memory limit
+ark myapp --no-memory           # clear the memory limit
 ```
 
 Each comma-separated token is independent — `--port -3000,3001` means "remove 3000, add 3001." To remove two ports, use `--port -3000,-3001`.
@@ -254,7 +256,11 @@ Each comma-separated token is independent — `--port -3000,3001` means "remove 
 
 > **Common gotcha:** servers inside the container must bind to `0.0.0.0` (not `127.0.0.1`) or port forwarding won't reach them.
 
-Changing ports recreates the container. Your `/work` and volume data are always preserved. You'll be asked to confirm the first time per project; subsequent changes proceed automatically.
+Changing ports or memory recreates the container. Your `/work` and volume data are always preserved. You'll be asked to confirm the first time per project; subsequent changes proceed automatically.
+
+Memory limits are sticky too. Use `ark myapp --memory 4g` to set the Docker
+container memory limit, or pass it during creation with
+`ark init myapp --memory 4g`.
 
 ---
 

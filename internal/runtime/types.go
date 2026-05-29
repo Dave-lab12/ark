@@ -15,6 +15,7 @@ type BuildImageSpec = core.BuildImageSpec
 type CreateSpec = core.CreateSpec
 type ExecSpec = core.ExecSpec
 type Container = core.Container
+type ResourceStats = core.ResourceStats
 type PortMapping = core.PortMapping
 type ExitError = core.ExitError
 

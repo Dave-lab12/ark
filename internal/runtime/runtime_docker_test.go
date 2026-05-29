@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/docker/docker/api/types"
 )
 
 // A single Docker-build `stream` frame larger than bufio.Scanner's 64KB
@@ -52,5 +54,28 @@ func TestStreamDockerBuildEmitsStatusWithNewline(t *testing.T) {
 	want := "Step 1/2 : FROM scratchPulling fs layer\n"
 	if out.String() != want {
 		t.Fatalf("output mismatch:\n got %q\nwant %q", out.String(), want)
+	}
+}
+
+func TestCalculateCPUPercent(t *testing.T) {
+	stats := types.StatsJSON{}
+	stats.PreCPUStats.CPUUsage.TotalUsage = 1_000
+	stats.CPUStats.CPUUsage.TotalUsage = 3_000
+	stats.PreCPUStats.SystemUsage = 10_000
+	stats.CPUStats.SystemUsage = 20_000
+	stats.CPUStats.OnlineCPUs = 4
+
+	if got := calculateCPUPercent(stats); got != 80 {
+		t.Fatalf("calculateCPUPercent = %v, want 80", got)
+	}
+}
+
+func TestCalculateMemoryUsageSubtractsCache(t *testing.T) {
+	stats := types.StatsJSON{}
+	stats.MemoryStats.Usage = 512
+	stats.MemoryStats.Stats = map[string]uint64{"inactive_file": 128}
+
+	if got := calculateMemoryUsage(stats); got != 384 {
+		t.Fatalf("calculateMemoryUsage = %d, want 384", got)
 	}
 }

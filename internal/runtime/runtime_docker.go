@@ -21,6 +21,7 @@ import (
 	"github.com/docker/docker/errdefs"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/docker/go-connections/nat"
+	"github.com/docker/go-units"
 	"golang.org/x/term"
 )
 
@@ -142,6 +143,16 @@ func (r *DockerRuntime) Create(ctx context.Context, spec CreateSpec) (string, er
 		// it resolve to the host so the Git broker's TCP fallback works there.
 		// No-op on Docker Desktop where the mapping already exists.
 		ExtraHosts: []string{"host.docker.internal:host-gateway"},
+	}
+	if spec.Memory != "" {
+		memoryBytes, err := units.RAMInBytes(spec.Memory)
+		if err != nil || memoryBytes <= 0 {
+			if err == nil {
+				err = fmt.Errorf("memory limit must be greater than zero")
+			}
+			return "", fmt.Errorf("memory %q: %w", spec.Memory, err)
+		}
+		hostConfig.Resources.Memory = memoryBytes
 	}
 
 	if len(spec.Ports) > 0 {
@@ -330,6 +341,56 @@ func (r *DockerRuntime) Inspect(ctx context.Context, containerName string) (*Con
 		}
 	}
 	return c, nil
+}
+
+func (r *DockerRuntime) Stats(ctx context.Context, containerName string) (*ResourceStats, error) {
+	resp, err := r.client.ContainerStats(ctx, containerName, false)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil, fmt.Errorf("container %s: %w", containerName, ErrNotFound)
+		}
+		return nil, fmt.Errorf("stats container %s: %w", containerName, err)
+	}
+	defer resp.Body.Close()
+
+	var stats types.StatsJSON
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		return nil, fmt.Errorf("decode stats for %s: %w", containerName, err)
+	}
+	return &ResourceStats{
+		CPUPercent:  calculateCPUPercent(stats),
+		MemoryUsage: calculateMemoryUsage(stats),
+		MemoryLimit: stats.MemoryStats.Limit,
+	}, nil
+}
+
+func calculateCPUPercent(stats types.StatsJSON) float64 {
+	if stats.CPUStats.CPUUsage.TotalUsage < stats.PreCPUStats.CPUUsage.TotalUsage ||
+		stats.CPUStats.SystemUsage < stats.PreCPUStats.SystemUsage {
+		return 0
+	}
+	cpuDelta := float64(stats.CPUStats.CPUUsage.TotalUsage - stats.PreCPUStats.CPUUsage.TotalUsage)
+	systemDelta := float64(stats.CPUStats.SystemUsage - stats.PreCPUStats.SystemUsage)
+	onlineCPUs := float64(stats.CPUStats.OnlineCPUs)
+	if onlineCPUs == 0 {
+		onlineCPUs = float64(len(stats.CPUStats.CPUUsage.PercpuUsage))
+	}
+	if cpuDelta <= 0 || systemDelta <= 0 || onlineCPUs <= 0 {
+		return 0
+	}
+	return (cpuDelta / systemDelta) * onlineCPUs * 100
+}
+
+func calculateMemoryUsage(stats types.StatsJSON) uint64 {
+	usage := stats.MemoryStats.Usage
+	cache := stats.MemoryStats.Stats["inactive_file"]
+	if cache == 0 {
+		cache = stats.MemoryStats.Stats["total_inactive_file"]
+	}
+	if usage > cache {
+		return usage - cache
+	}
+	return usage
 }
 
 func (r *DockerRuntime) List(ctx context.Context) ([]Container, error) {

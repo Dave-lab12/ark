@@ -118,6 +118,63 @@ func TestRunProjectPortChangeNoopDoesNotRecreate(t *testing.T) {
 	}
 }
 
+func TestRunProjectMemoryChangeRecreatesAndPersists(t *testing.T) {
+	ctx := context.Background()
+	rt := &fakePortRuntime{
+		inspectResults: []*Container{
+			{Running: false, Status: "exited"},
+			{Running: false, Status: "created"},
+		},
+	}
+	app, _, _ := newPortTestApp(t, "", testProject(t, nil, false), rt)
+
+	err := app.RunProjectWithOptions(ctx, "app", nil, ProjectOptions{
+		Memory: MemoryOptions{Limit: "4g"},
+	})
+	if err != nil {
+		t.Fatalf("RunProjectWithOptions: %v", err)
+	}
+
+	wantCalls := []string{"Inspect", "Remove", "Create", "Inspect", "Start"}
+	if !reflect.DeepEqual(rt.calls, wantCalls) {
+		t.Fatalf("calls mismatch:\n got: %v\nwant: %v", rt.calls, wantCalls)
+	}
+	if len(rt.createSpecs) != 1 || rt.createSpecs[0].Memory != "4g" {
+		t.Fatalf("Create memory mismatch: %#v", rt.createSpecs)
+	}
+	project := mustRegistryProject(t, app, "app")
+	if project.Memory != "4g" {
+		t.Fatalf("registry memory = %q, want 4g", project.Memory)
+	}
+}
+
+func TestRunProjectPortAndMemoryChangeRecreatesOnce(t *testing.T) {
+	ctx := context.Background()
+	port3000 := mustPortMapping(t, "3000")
+	rt := &fakePortRuntime{
+		inspectResults: []*Container{
+			{Running: false, Status: "exited"},
+			{Running: false, Status: "created"},
+		},
+	}
+	app, _, _ := newPortTestApp(t, "", testProject(t, nil, false), rt)
+
+	err := app.RunProjectWithOptions(ctx, "app", nil, ProjectOptions{
+		Ports:  PortOptions{Specs: []string{"3000"}},
+		Memory: MemoryOptions{Limit: "4g"},
+	})
+	if err != nil {
+		t.Fatalf("RunProjectWithOptions: %v", err)
+	}
+
+	if len(rt.createSpecs) != 1 {
+		t.Fatalf("expected one recreate, got %#v", rt.createSpecs)
+	}
+	if !PortMappingsEqual(rt.createSpecs[0].Ports, []PortMapping{port3000}) || rt.createSpecs[0].Memory != "4g" {
+		t.Fatalf("Create spec mismatch: %#v", rt.createSpecs[0])
+	}
+}
+
 func TestRunProjectNoPortsClearsAndRecreates(t *testing.T) {
 	ctx := context.Background()
 	port3000 := mustPortMapping(t, "3000")
@@ -289,7 +346,71 @@ func TestRunProjectInvalidPortSpecDoesNotTouchRuntime(t *testing.T) {
 	}
 }
 
+func TestRunProjectInvalidMemoryDoesNotTouchRuntime(t *testing.T) {
+	ctx := context.Background()
+	rt := &fakePortRuntime{}
+	app, _, _ := newPortTestApp(t, "", testProject(t, nil, false), rt)
+
+	err := app.RunProjectWithOptions(ctx, "app", nil, ProjectOptions{
+		Memory: MemoryOptions{Limit: "nope"},
+	})
+	if err == nil {
+		t.Fatalf("expected error")
+	}
+	if !strings.Contains(err.Error(), "invalid memory limit") {
+		t.Fatalf("error = %v, want invalid memory limit", err)
+	}
+	if len(rt.calls) != 0 {
+		t.Fatalf("runtime should not be touched for invalid memory, got %v", rt.calls)
+	}
+}
+
 func TestListProjectsIncludesPortsColumn(t *testing.T) {
+	ctx := context.Background()
+	port3000 := mustPortMapping(t, "3000")
+	project := testProject(t, []PortMapping{port3000}, false)
+	project.Memory = "4g"
+	rt := &fakePortRuntime{
+		inspectResults: []*Container{{Running: true, Status: "running"}},
+		statsResults:   []*ResourceStats{{CPUPercent: 12.5, MemoryUsage: 128 * 1024 * 1024}},
+	}
+	app, out, _ := newPortTestApp(t, "", project, rt)
+
+	if err := app.ListProjects(ctx); err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+
+	got := out.String()
+	for _, want := range []string{"PORTS", "LIMIT", "CPU", "RAM", "3000", "4g", "12.5%", "128MiB"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("list output missing %q:\n%s", want, got)
+		}
+	}
+	if !reflect.DeepEqual(rt.calls, []string{"Inspect", "Stats"}) {
+		t.Fatalf("calls mismatch:\n got: %v\nwant: %v", rt.calls, []string{"Inspect", "Stats"})
+	}
+}
+
+func TestListProjectsSkipsStatsForStoppedContainers(t *testing.T) {
+	ctx := context.Background()
+	rt := &fakePortRuntime{
+		inspectResults: []*Container{{Running: false, Status: "exited"}},
+	}
+	app, out, _ := newPortTestApp(t, "", testProject(t, nil, false), rt)
+
+	if err := app.ListProjects(ctx); err != nil {
+		t.Fatalf("ListProjects: %v", err)
+	}
+
+	if strings.Contains(out.String(), "0.0%") {
+		t.Fatalf("stopped container should not show live stats:\n%s", out.String())
+	}
+	if !reflect.DeepEqual(rt.calls, []string{"Inspect"}) {
+		t.Fatalf("calls mismatch:\n got: %v\nwant: %v", rt.calls, []string{"Inspect"})
+	}
+}
+
+func TestListProjectsIncludesPortsColumnLegacy(t *testing.T) {
 	ctx := context.Background()
 	port3000 := mustPortMapping(t, "3000")
 	rt := &fakePortRuntime{
@@ -320,8 +441,25 @@ func TestParsePortOptionsFromArgsStripsPortFlags(t *testing.T) {
 	}
 }
 
+func TestParseProjectOptionsFromArgsStripsMemoryFlags(t *testing.T) {
+	cmdArgs, opts, err := parseProjectOptionsFromArgs([]string{"--memory", "4g", "npm", "run", "dev", "--port=3000"})
+	if err != nil {
+		t.Fatalf("parseProjectOptionsFromArgs: %v", err)
+	}
+	if !reflect.DeepEqual(cmdArgs, []string{"npm", "run", "dev"}) {
+		t.Fatalf("cmd args = %v", cmdArgs)
+	}
+	if opts.Memory.Limit != "4g" || !opts.Memory.Specified {
+		t.Fatalf("memory = %#v", opts.Memory)
+	}
+	if !opts.Ports.Specified || !reflect.DeepEqual(opts.Ports.Specs, []string{"3000"}) {
+		t.Fatalf("ports = %#v", opts.Ports)
+	}
+}
+
 type fakePortRuntime struct {
 	inspectResults []*Container
+	statsResults   []*ResourceStats
 	createSpecs    []CreateSpec
 	calls          []string
 	createdVolumes []string
@@ -385,6 +523,16 @@ func (f *fakePortRuntime) Inspect(context.Context, string) (*Container, error) {
 	}
 	result := f.inspectResults[0]
 	f.inspectResults = f.inspectResults[1:]
+	return result, nil
+}
+
+func (f *fakePortRuntime) Stats(context.Context, string) (*ResourceStats, error) {
+	f.calls = append(f.calls, "Stats")
+	if len(f.statsResults) == 0 {
+		return &ResourceStats{}, nil
+	}
+	result := f.statsResults[0]
+	f.statsResults = f.statsResults[1:]
 	return result, nil
 }
 

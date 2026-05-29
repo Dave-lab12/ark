@@ -20,6 +20,7 @@ type Runtime interface {
 
 	Exec(ctx context.Context, containerName string, spec ExecSpec) error
 	Inspect(ctx context.Context, containerName string) (*Container, error)
+	Stats(ctx context.Context, containerName string) (*ResourceStats, error)
 	List(ctx context.Context) ([]Container, error)
 
 	CreateVolume(ctx context.Context, name string) error
