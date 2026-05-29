@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.1.3](https://github.com/Dave-lab12/ark/compare/v0.1.2...v0.1.3) (2026-05-29)
+
+
+### Bug Fixes
+
+* add memory limit support and live resource stats for projects ([039ac45](https://github.com/Dave-lab12/ark/commit/039ac4587f4ad0d6baa88d8926a435c8ce3b526d))
+* add memory limit support for projects ([946a67a](https://github.com/Dave-lab12/ark/commit/946a67adb4c7160a5cc2baaba432f38688edd1f8))
+* add network group management commands and functionality ([70f0794](https://github.com/Dave-lab12/ark/commit/70f0794430b20b16a8444a1a273995c8a967ed60))
+* Add network group management commands and functionality ([95bf00e](https://github.com/Dave-lab12/ark/commit/95bf00eba0e1e0a75a19d8a48b36dd25cb47744b))
+* integrate Git broker for editor sessions and enhance devcontainer support ([bbe3ba0](https://github.com/Dave-lab12/ark/commit/bbe3ba07a1be4ec746acee27b336b9e7227e8b55))
+* integrate Git broker for editor sessions and enhance devcontainers ([ddf418b](https://github.com/Dave-lab12/ark/commit/ddf418bfd37002f25ff2a72fa6f3358e22b89c74))
+
 ## [0.1.2](https://github.com/Dave-lab12/ark/compare/v0.1.1...v0.1.2) (2026-05-25)
 
 
