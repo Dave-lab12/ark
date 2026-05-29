@@ -118,6 +118,8 @@ func (a *App) rootCommand(ctx context.Context) *cobra.Command {
 	root.AddCommand(a.stopCommand())
 	root.AddCommand(a.removeCommand())
 	root.AddCommand(a.listCommand())
+	root.AddCommand(a.statsCommand())
+	root.AddCommand(a.networkCommand())
 	root.AddCommand(a.tempCommand())
 	root.AddCommand(a.configCommand())
 	root.AddCommand(a.imageCommand())
@@ -285,6 +287,60 @@ func (a *App) listCommand() *cobra.Command {
 			return a.ListProjects(cmd.Context())
 		},
 	}
+}
+
+func (a *App) statsCommand() *cobra.Command {
+	return &cobra.Command{
+		Use:     "stats [project...]",
+		Short:   "show live project CPU and RAM usage",
+		GroupID: "projects",
+		Args:    cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return a.ListProjectStats(cmd.Context(), args)
+		},
+	}
+}
+
+func (a *App) networkCommand() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:     "network",
+		Short:   "manage project network groups",
+		GroupID: "projects",
+	}
+	cmd.AddCommand(&cobra.Command{
+		Use:   "ls",
+		Short: "list network groups",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return a.ListNetworkGroups(cmd.Context())
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "create <group>",
+		Short: "create a network group",
+		Args:  cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return a.CreateNetworkGroup(cmd.Context(), args[0])
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:   "add <group> <project...>",
+		Short: "add projects to a network group",
+		Args:  cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return a.AddProjectsToNetworkGroup(cmd.Context(), args[0], args[1:])
+		},
+	})
+	cmd.AddCommand(&cobra.Command{
+		Use:     "remove <group> <project...>",
+		Aliases: []string{"rm"},
+		Short:   "remove projects from a network group",
+		Args:    cobra.MinimumNArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return a.RemoveProjectsFromNetworkGroup(cmd.Context(), args[0], args[1:])
+		},
+	})
+	return cmd
 }
 
 func (a *App) tempCommand() *cobra.Command {

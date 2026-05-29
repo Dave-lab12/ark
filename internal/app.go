@@ -122,6 +122,20 @@ func formatCPUPercent(cpu float64) string {
 	return fmt.Sprintf("%.1f%%", cpu)
 }
 
+func arkNetworkName(group string) (string, error) {
+	group = strings.TrimSpace(group)
+	if group == "" {
+		return "", errors.New("network group name cannot be empty")
+	}
+	for _, r := range group {
+		if (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '_' || r == '-' || r == '.' {
+			continue
+		}
+		return "", fmt.Errorf("invalid network group %q: use letters, numbers, dots, dashes, or underscores", group)
+	}
+	return "ark-" + group, nil
+}
+
 // NewApp is intentionally cheap: it resolves paths and wires I/O streams,
 // but does no disk I/O and loads no config. All filesystem touches happen
 // in Prepare so tests can construct an App without a real ~/.ark layout.
@@ -625,7 +639,8 @@ func (a *App) ListProjects(ctx context.Context) error {
 		fmt.Fprintln(a.out, "No ark projects yet.")
 		return nil
 	}
-	fmt.Fprintf(a.out, "%-18s %-8s %-12s %-18s %-10s %-8s %-10s %s\n", "NAME", "RUNTIME", "STATUS", "PORTS", "LIMIT", "CPU", "RAM", "PATH")
+	projectGroups := a.projectNetworkGroups(ctx, state)
+	fmt.Fprintf(a.out, "%-18s %-8s %-12s %-18s %-14s %-10s %s\n", "NAME", "RUNTIME", "STATUS", "PORTS", "GROUPS", "LIMIT", "PATH")
 	names := make([]string, 0, len(state.Projects))
 	for name := range state.Projects {
 		names = append(names, name)
@@ -634,7 +649,6 @@ func (a *App) ListProjects(ctx context.Context) error {
 	for _, name := range names {
 		project := state.Projects[name]
 		status := "unknown"
-		var stats *ResourceStats
 		runtimeByName := a.runtimeByName
 		if runtimeByName == nil {
 			runtimeByName = RuntimeByName
@@ -642,11 +656,6 @@ func (a *App) ListProjects(ctx context.Context) error {
 		if rt, err := runtimeByName(project.Runtime); err == nil {
 			if container, err := rt.Inspect(ctx, project.ContainerName); err == nil {
 				status = container.Status
-				if container.Running {
-					if liveStats, err := rt.Stats(ctx, project.ContainerName); err == nil {
-						stats = liveStats
-					}
-				}
 			}
 		}
 		ports := FormatPortList(project.Ports)
@@ -657,13 +666,231 @@ func (a *App) ListProjects(ctx context.Context) error {
 		if memory == "" {
 			memory = "—"
 		}
+		groups := strings.Join(projectGroups[project.Name], ",")
+		if groups == "" {
+			groups = "—"
+		}
+		fmt.Fprintf(a.out, "%-18s %-8s %-12s %-18s %-14s %-10s %s\n", project.Name, project.Runtime, status, truncateColumn(ports, 18), truncateColumn(groups, 14), truncateColumn(memory, 10), project.Path)
+	}
+	return nil
+}
+
+func (a *App) ListProjectStats(ctx context.Context, projectNames []string) error {
+	state, err := a.registry.Load(ctx)
+	if err != nil {
+		return err
+	}
+	if len(state.Projects) == 0 {
+		fmt.Fprintln(a.out, "No ark projects yet.")
+		return nil
+	}
+	names := projectNames
+	if len(names) == 0 {
+		names = make([]string, 0, len(state.Projects))
+		for name := range state.Projects {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+	}
+	fmt.Fprintf(a.out, "%-18s %-12s %-8s %-10s %-10s\n", "NAME", "STATUS", "CPU", "RAM", "LIMIT")
+	for _, name := range names {
+		project, ok := state.Projects[name]
+		if !ok {
+			return fmt.Errorf("project %q: %w", name, ErrNotFound)
+		}
+		status := "unknown"
 		cpu := "—"
 		ram := "—"
-		if stats != nil {
-			cpu = formatCPUPercent(stats.CPUPercent)
-			ram = FormatBytes(stats.MemoryUsage)
+		limit := project.Memory
+		if limit == "" {
+			limit = "—"
 		}
-		fmt.Fprintf(a.out, "%-18s %-8s %-12s %-18s %-10s %-8s %-10s %s\n", project.Name, project.Runtime, status, truncateColumn(ports, 18), truncateColumn(memory, 10), cpu, truncateColumn(ram, 10), project.Path)
+		rt, err := a.runtimeForProject(ctx, project)
+		if err != nil {
+			return err
+		}
+		container, err := rt.Inspect(ctx, project.ContainerName)
+		if err != nil {
+			if !errors.Is(err, ErrNotFound) {
+				return err
+			}
+		} else {
+			status = container.Status
+			if container.Running {
+				stats, err := rt.Stats(ctx, project.ContainerName)
+				if err != nil {
+					return err
+				}
+				cpu = formatCPUPercent(stats.CPUPercent)
+				ram = FormatBytes(stats.MemoryUsage)
+			}
+		}
+		fmt.Fprintf(a.out, "%-18s %-12s %-8s %-10s %-10s\n", project.Name, status, cpu, ram, limit)
+	}
+	return nil
+}
+
+func (a *App) projectNetworkGroups(ctx context.Context, state *State) map[string][]string {
+	out := map[string][]string{}
+	runtimeByName := a.runtimeByName
+	if runtimeByName == nil {
+		runtimeByName = RuntimeByName
+	}
+	rt, err := runtimeByName(RuntimeDocker)
+	if err != nil {
+		return out
+	}
+	groups, err := rt.ListNetworkGroups(ctx)
+	if err != nil {
+		return out
+	}
+	projectByContainer := map[string]string{}
+	for _, project := range state.Projects {
+		projectByContainer[project.ContainerName] = project.Name
+	}
+	for _, group := range groups {
+		for _, containerName := range group.Containers {
+			projectName, ok := projectByContainer[containerName]
+			if !ok {
+				continue
+			}
+			out[projectName] = append(out[projectName], group.Name)
+		}
+	}
+	for projectName := range out {
+		sort.Strings(out[projectName])
+	}
+	return out
+}
+
+func (a *App) CreateNetworkGroup(ctx context.Context, group string) error {
+	networkName, err := arkNetworkName(group)
+	if err != nil {
+		return err
+	}
+	rt, err := a.runtimeByName(RuntimeDocker)
+	if err != nil {
+		return err
+	}
+	if err := rt.Available(ctx); err != nil {
+		return err
+	}
+	if err := rt.EnsureNetwork(ctx, networkName); err != nil {
+		return err
+	}
+	fmt.Fprintf(a.out, "Created network group %s\n", group)
+	return nil
+}
+
+func (a *App) ListNetworkGroups(ctx context.Context) error {
+	state, err := a.registry.Load(ctx)
+	if err != nil {
+		return err
+	}
+	rt, err := a.runtimeByName(RuntimeDocker)
+	if err != nil {
+		return err
+	}
+	if err := rt.Available(ctx); err != nil {
+		return err
+	}
+	groups, err := rt.ListNetworkGroups(ctx)
+	if err != nil {
+		return err
+	}
+	if len(groups) == 0 {
+		fmt.Fprintln(a.out, "No ark network groups yet.")
+		return nil
+	}
+	projectByContainer := map[string]string{}
+	for _, project := range state.Projects {
+		projectByContainer[project.ContainerName] = project.Name
+	}
+	fmt.Fprintf(a.out, "%-18s %-20s %s\n", "GROUP", "NETWORK", "PROJECTS")
+	for _, group := range groups {
+		projects := make([]string, 0, len(group.Containers))
+		for _, containerName := range group.Containers {
+			if projectName, ok := projectByContainer[containerName]; ok {
+				projects = append(projects, projectName)
+			} else {
+				projects = append(projects, containerName)
+			}
+		}
+		sort.Strings(projects)
+		projectList := strings.Join(projects, ",")
+		if projectList == "" {
+			projectList = "—"
+		}
+		fmt.Fprintf(a.out, "%-18s %-20s %s\n", group.Name, group.NetworkName, projectList)
+	}
+	return nil
+}
+
+func (a *App) AddProjectsToNetworkGroup(ctx context.Context, group string, projectNames []string) error {
+	if len(projectNames) == 0 {
+		return errors.New("at least one project is required")
+	}
+	networkName, err := arkNetworkName(group)
+	if err != nil {
+		return err
+	}
+	rt, err := a.runtimeByName(RuntimeDocker)
+	if err != nil {
+		return err
+	}
+	if err := rt.Available(ctx); err != nil {
+		return err
+	}
+	if err := rt.EnsureNetwork(ctx, networkName); err != nil {
+		return err
+	}
+	for _, projectName := range projectNames {
+		project, err := a.registry.Project(ctx, projectName)
+		if err != nil {
+			return err
+		}
+		if project.Runtime != RuntimeDocker {
+			return fmt.Errorf("project %s uses runtime %s; network groups currently support docker projects", project.Name, project.Runtime)
+		}
+		if err := rt.ConnectNetwork(ctx, NetworkConnectSpec{
+			NetworkName:   networkName,
+			ContainerName: project.ContainerName,
+			Aliases:       []string{project.Name},
+		}); err != nil {
+			return err
+		}
+		fmt.Fprintf(a.out, "Added %s to network group %s\n", project.Name, group)
+	}
+	return nil
+}
+
+func (a *App) RemoveProjectsFromNetworkGroup(ctx context.Context, group string, projectNames []string) error {
+	if len(projectNames) == 0 {
+		return errors.New("at least one project is required")
+	}
+	networkName, err := arkNetworkName(group)
+	if err != nil {
+		return err
+	}
+	rt, err := a.runtimeByName(RuntimeDocker)
+	if err != nil {
+		return err
+	}
+	if err := rt.Available(ctx); err != nil {
+		return err
+	}
+	for _, projectName := range projectNames {
+		project, err := a.registry.Project(ctx, projectName)
+		if err != nil {
+			return err
+		}
+		if project.Runtime != RuntimeDocker {
+			return fmt.Errorf("project %s uses runtime %s; network groups currently support docker projects", project.Name, project.Runtime)
+		}
+		if err := rt.DisconnectNetwork(ctx, networkName, project.ContainerName); err != nil {
+			return err
+		}
+		fmt.Fprintf(a.out, "Removed %s from network group %s\n", project.Name, group)
 	}
 	return nil
 }

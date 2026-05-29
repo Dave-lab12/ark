@@ -16,6 +16,8 @@ type CreateSpec = core.CreateSpec
 type ExecSpec = core.ExecSpec
 type Container = core.Container
 type ResourceStats = core.ResourceStats
+type NetworkConnectSpec = core.NetworkConnectSpec
+type NetworkGroup = core.NetworkGroup
 type PortMapping = core.PortMapping
 type ExitError = core.ExitError
 

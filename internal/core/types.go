@@ -69,6 +69,18 @@ type ResourceStats struct {
 	MemoryLimit uint64
 }
 
+type NetworkConnectSpec struct {
+	NetworkName   string
+	ContainerName string
+	Aliases       []string
+}
+
+type NetworkGroup struct {
+	Name        string
+	NetworkName string
+	Containers  []string
+}
+
 type BuildImageSpec struct {
 	ContextDir string
 	Dockerfile string

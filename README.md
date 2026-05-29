@@ -86,6 +86,7 @@ ark myapp echo hello              # run a command and exit
 ark stop myapp                    # stop the container
 ark myapp                         # container resumes automatically
 ark ls                            # list all projects
+ark stats                         # show live CPU and RAM usage
 ark rm myapp -f                   # delete a project
 ```
 
@@ -102,9 +103,14 @@ ark rm myapp -f                   # delete a project
 | `ark devcontainer write <name>` | Generate the devcontainer.json for a project |
 | `ark start <name>` | Start a stopped project |
 | `ark stop <name>` | Stop a running project |
+| `ark network ls` | List project network groups |
+| `ark network create <group>` | Create a project network group |
+| `ark network add <group> <project...>` | Add projects to a network group |
+| `ark network remove <group> <project...>` | Remove projects from a network group |
 | `ark rm <name> -f` | Delete a project and its volumes |
 | `ark rebuild <name>` | Rebuild a project's container |
-| `ark ls` | List projects with status, ports, memory limit, CPU, and RAM |
+| `ark ls` | List projects with status, ports, network groups, and memory limit |
+| `ark stats [project...]` | Show live project CPU and RAM usage |
 | `ark doctor` | Check your environment |
 | `ark image status` | Show base image info |
 | `ark image rebuild` | Rebuild the base image |
@@ -261,6 +267,23 @@ Changing ports or memory recreates the container. Your `/work` and volume data a
 Memory limits are sticky too. Use `ark myapp --memory 4g` to set the Docker
 container memory limit, or pass it during creation with
 `ark init myapp --memory 4g`.
+
+## Network Groups
+
+Network groups let projects reach each other directly without using host ports
+or Docker container IDs.
+
+```sh
+ark network create mindplex
+ark network add mindplex api_mindplex dashboard_mindplex
+ark network ls
+ark dashboard_mindplex curl http://api_mindplex:3000
+ark network remove mindplex dashboard_mindplex
+```
+
+Ark creates a Docker bridge network named from the group, then connects each
+project container with its project name as the DNS alias. The service still
+needs to listen on `0.0.0.0` inside its container.
 
 ---
 
